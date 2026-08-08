@@ -1,0 +1,20 @@
+{
+  "keep": {
+    "days": true,
+    "amount": 14
+  },
+  "auditLog": "C:\\Users\\Masum-Rana\\Documents\\Next level Web Development\\assignment-9\\laundryhub-backend\\logs\\winston\\succeses\\.eef061dfe0f0d04ec5fa01c541ed7ff763eb77ec-audit.json",
+  "files": [
+    {
+      "date": 1708656804133,
+      "name": "C:\\Users\\Masum-Rana\\Documents\\Next level Web Development\\assignment-9\\laundryhub-backend\\logs\\winston\\succeses\\success-2024-02-23-08.log",
+      "hash": "44b210e79b2fe5ed0ce5a3c5316b74721cd0ed3b77f7832c5fe5d1f1d4951357"
+    },
+    {
+      "date": 1708658073384,
+      "name": "C:\\Users\\Masum-Rana\\Documents\\Next level Web Development\\assignment-9\\laundryhub-backend\\logs\\winston\\succeses\\success-2024-02-23-09.log",
+      "hash": "fe2e6d1fad0974ee5604666f1fc226eef25d4807a56b2218f64ae7e066c7660b"
+    }
+  ],
+  "hashType": "sha256"
+}

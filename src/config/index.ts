@@ -1,0 +1,44 @@
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.join(process.cwd(), '.env') });
+
+export default {
+  env: process.env.NODE_ENV,
+  port: process.env.PORT || 5000,
+  email: process.env.EMAIL,
+  email_secret: process.env.EMAIL_PASSWORD,
+  verification_url: process.env.EMAIL_VERIFICATION_URL,
+  database_url: process.env.DATABASE_URL,
+  bcrypt_salt_rounds: process.env.BCRYPT_SALT_ROUNDS,
+  reset_password_url: process.env.RESET_PASSWORD_URL,
+  verify_user_url: process.env.VERIFY_USER_URL,
+  super_admin_id: process.env.SUPER_ADMIN_ID,
+  stripe_secret_key: process.env.STRIPE_SECRET_KEY,
+  stripe_publishable_key: process.env.STRIPE_PUBLISHABLE_KEY,
+  frontend_url:
+    process.env.FRONTEND_URL ||
+    process.env.CLIENT_URL ||
+    process.env.NEXT_PUBLIC_FRONTEND_URL,
+  backend_url: process.env.BACKEND_URL || process.env.API_PUBLIC_URL,
+  bdgate: {
+    api_key: process.env.BDGATE_API_KEY,
+    api_base_url:
+      process.env.BDGATE_API_BASE_URL || 'https://api.bdgate.net/api/v1',
+    webhook_secret: process.env.BDGATE_WEBHOOK_SECRET,
+  },
+  // google: {
+  //   client_id: process.env.GOOGLE_CLIENT_ID,
+  //   client_secret: process.env.GOOGLE_CLIENT_SECRET,
+  //   callback_url: process.env.GOOGLE_CALLBACK_URL,
+  // },
+
+  jwt: {
+    accessTokenSecret: process.env.JWT_ACCESSTOKEN_SECRET,
+    refreshTokenSecret: process.env.JWT_REFRESHTOKEN_SECRET,
+    accessTokenExpireIn: process.env.JWT_ACCESSTOKEN_EXPIRE,
+    refreshTokenExpireIn: process.env.JWT_REFRESHTOKEN_EXPIRE,
+    tokenSecret: process.env.JWT_TOKEN_SESECRET,
+    expires_in: process.env.JWT_EXPIRES_IN,
+    refresh_expires_in: process.env.JWT_REFRESH_EXPIRES_IN,
+  },
+};
