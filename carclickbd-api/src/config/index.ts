@@ -20,10 +20,14 @@ export default {
     process.env.CLIENT_URL ||
     process.env.NEXT_PUBLIC_FRONTEND_URL,
   backend_url: process.env.BACKEND_URL || process.env.API_PUBLIC_URL,
+  auction_sheet_price_bdt: Number(process.env.AUCTION_SHEET_PRICE_BDT || 800),
+  auction_sheet_root:
+    process.env.AUCTION_SHEET_ROOT ||
+    `${process.env.UPLOAD_ROOT || process.env.UPLOAD_DIR || ''}/auction-sheets`,
   bdgate: {
     api_key: process.env.BDGATE_API_KEY,
     api_base_url:
-      process.env.BDGATE_API_BASE_URL || 'https://api.bdgate.net/api/v1',
+      process.env.BDGATE_API_BASE_URL || 'https://api.bdgate.net/api',
     webhook_secret: process.env.BDGATE_WEBHOOK_SECRET,
   },
   // google: {

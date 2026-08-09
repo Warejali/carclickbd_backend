@@ -12,9 +12,11 @@ import mongoose from 'mongoose';
 import ApiError from '../../../errors/ApiError';
 import httpStatus from 'http-status';
 import crypto from 'crypto';
+import { AuctionSheetService } from '../auctionSheet/auctionSheet.service';
+import { AuctionSheetOrder } from '../auctionSheet/auctionSheet.model';
 
 const stripe = new Stripe(config?.stripe_secret_key as string);
-const BDGATE_DEFAULT_API_BASE_URL = 'https://api.bdgate.net/api/v1';
+const BDGATE_DEFAULT_API_BASE_URL = 'https://api.bdgate.net/api';
 
 const getAppUrl = (value?: string) => value?.replace(/\/+$/, '');
 
@@ -70,7 +72,10 @@ const mapBdGateStatus = (
   if (
     normalizedStatus === 'paid' ||
     normalizedStatus === 'completed' ||
-    normalizedEvent === 'payment.confirmed'
+    normalizedStatus === 'success' ||
+    normalizedEvent === 'payment.confirmed' ||
+    normalizedEvent === 'payment.completed' ||
+    normalizedEvent === 'completed'
   ) {
     return 'PAID';
   }
@@ -88,17 +93,18 @@ const mapBdGateStatus = (
 };
 
 const verifyBdGateSignature = (payload: unknown, signature?: string) => {
-  if (!config.bdgate.webhook_secret || !signature) {
-    return true;
+  const secret = config.bdgate.webhook_secret || config.bdgate.api_key;
+  if (!secret || !signature) {
+    return config.env !== 'production';
   }
 
   const digest = crypto
-    .createHmac('sha256', config.bdgate.webhook_secret)
+    .createHmac('sha256', secret)
     .update(JSON.stringify(payload))
     .digest('hex');
 
   const digestBuffer = Buffer.from(digest);
-  const signatureBuffer = Buffer.from(signature);
+  const signatureBuffer = Buffer.from(signature.replace(/^sha256=/i, ''));
 
   return (
     digestBuffer.length === signatureBuffer.length &&
@@ -183,16 +189,20 @@ const initBdGatePayment = async (data: any, userId: string) => {
 
   const bdGatePayload = {
     amount: amount.toFixed(2),
+    currency: 'BDT',
     customer_name: customerName,
     customer_email: customerEmail,
     customer_phone: customerPhone,
     description:
       data?.description ||
       `CarClickBD order #${order.orderNumber || order._id}`,
-    redirect_url:
+    success_url:
       data?.redirect_url ||
       data?.success_url ||
       `${frontendUrl}/payments?status=success&provider=bdgate&order=${order._id}`,
+    fail_url:
+      data?.fail_url ||
+      `${frontendUrl}/payments?status=failed&provider=bdgate&order=${order._id}`,
     cancel_url:
       data?.cancel_url ||
       data?.fail_url ||
@@ -203,7 +213,7 @@ const initBdGatePayment = async (data: any, userId: string) => {
     metadata,
   };
 
-  const response = await postToBdGate('/payment/create', bdGatePayload);
+  const response = await postToBdGate('/v1/checkout', bdGatePayload);
 
   const responseBody = await response.json().catch(() => null);
   const bdGateData = getBdGateResponseData(responseBody);
@@ -277,45 +287,51 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     );
   }
 
-  const amount = Number(data?.amount || 10);
-  if (!amount || Number.isNaN(amount) || amount <= 0) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      'Valid payment amount is required',
-    );
+  const orderId = data?.orderId || data?.order_id;
+  if (!orderId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Auction sheet order id is required');
+  }
+
+  const order = await AuctionSheetService.getOrderById(orderId);
+  if (order.status === 'PAID') {
+    throw new ApiError(httpStatus.CONFLICT, 'Auction sheet order is already paid');
   }
 
   const frontendUrl = getAppUrl(config.frontend_url) || 'http://localhost:3000';
-  const backendUrl = getAppUrl(config.backend_url);
+  const backendUrl = getAppUrl(data?.backend_url || config.backend_url);
+  if (!backendUrl) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'BACKEND_URL is required for BDGate webhook delivery',
+    );
+  }
+
+  const paymentId = order._id?.toString();
+  const chassis = order.chassis;
   const metadata = {
+    order_id: paymentId,
     payment_type: 'auction_sheet_verification',
     source: 'auction-sheet-verification',
-    chassis_no: data?.chassis_no || data?.chassisNo,
-    created_at: new Date().toISOString(),
+    chassis_no: chassis,
   };
+  const successUrl = `${frontendUrl}/payments?status=success&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
+  const failUrl = `${frontendUrl}/payments?status=failed&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
+  const cancelUrl = `${frontendUrl}/payments?status=cancelled&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
 
   const bdGatePayload = {
-    amount: amount.toFixed(2),
-    customer_name: data?.customer_name || 'CarClickBD Customer',
-    customer_email: data?.customer_email || 'customer@carclickbd.com',
-    customer_phone: data?.customer_phone || '01576611703',
-    description:
-      data?.description || 'CarClickBD auction sheet verification payment',
-    redirect_url:
-      data?.redirect_url ||
-      data?.success_url ||
-      `${frontendUrl}/payments?status=success&provider=bdgate&type=auction-sheet`,
-    cancel_url:
-      data?.cancel_url ||
-      data?.fail_url ||
-      `${frontendUrl}/payments?status=cancelled&provider=bdgate&type=auction-sheet`,
-    webhook_url:
-      data?.webhook_url ||
-      (backendUrl ? `${backendUrl}/api/v1/payment/bdgate/webhook` : undefined),
+    amount: order.amount,
+    currency: 'BDT',
+    customer_name: order.name,
+    customer_email: order.email,
+    description: data?.description || `CarClickBD auction sheet verification for ${chassis}`,
+    success_url: successUrl,
+    fail_url: failUrl,
+    cancel_url: cancelUrl,
+    webhook_url: data?.webhook_url || `${backendUrl}/api/v1/payment/bdgate/webhook`,
     metadata,
   };
 
-  const response = await postToBdGate('/payment/create', bdGatePayload);
+  const response = await postToBdGate('/v1/checkout', bdGatePayload);
 
   const responseBody = await response.json().catch(() => null);
   const bdGateData = getBdGateResponseData(responseBody);
@@ -345,15 +361,24 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     bdGateData?.checkout_url ||
     bdGateData?.url;
 
-  if (!paymentUrl) {
+  if (!paymentUrl || !sessionToken) {
     throw new ApiError(
       httpStatus.BAD_GATEWAY,
-      'BDGate payment URL was not returned',
+      'BDGate did not return a payment URL and session token',
     );
   }
 
+  await AuctionSheetOrder.findByIdAndUpdate(order._id, {
+    bdgateSessionToken: sessionToken,
+    bdgatePaymentUrl: paymentUrl,
+    bdgateStatus: 'pending',
+    transactionId: sessionToken,
+    metadata,
+  });
+
   return {
     ...bdGateData,
+    order_id: paymentId,
     session_token: sessionToken,
     payment_url: paymentUrl,
   };
@@ -372,15 +397,47 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
     throw new ApiError(httpStatus.UNAUTHORIZED, 'Invalid BDGate signature');
   }
 
-  const paymentStatus = mapBdGateStatus(payload?.status, payload?.event);
-  const orderId = payload?.metadata?.order_id;
-  const sessionToken = payload?.session_token;
+  const gatewayData =
+    payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  const metadata = payload?.metadata || gatewayData?.metadata;
+  const paymentStatus = mapBdGateStatus(
+    payload?.status || gatewayData?.status,
+    payload?.event || gatewayData?.event,
+  );
+  const orderId = metadata?.order_id || gatewayData?.order_id;
+  const sessionToken =
+    payload?.session_token || gatewayData?.session_token || gatewayData?.session_id;
+  const transactionId =
+    payload?.tx_ref ||
+    gatewayData?.tx_ref ||
+    gatewayData?.transaction_id ||
+    sessionToken;
 
   if (!sessionToken && !orderId) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       'BDGate payment reference missing',
     );
+  }
+
+  const auctionSheetOrder =
+    (orderId && mongoose.isValidObjectId(orderId)
+      ? await AuctionSheetOrder.findById(orderId)
+      : null) ||
+    (sessionToken
+      ? await AuctionSheetOrder.findOne({ bdgateSessionToken: sessionToken })
+      : null);
+
+  if (auctionSheetOrder || metadata?.payment_type === 'auction_sheet_verification') {
+    const updatedOrder = await AuctionSheetService.updatePayment({
+      orderId,
+      sessionToken,
+      status: paymentStatus,
+      gatewayStatus: payload?.status || gatewayData?.status,
+      transactionId,
+      metadata,
+    });
+    return updatedOrder;
   }
 
   const payment = await Payment.findOneAndUpdate(
@@ -392,14 +449,14 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
     },
     {
       paymentStatus,
-      transactionId: payload?.tx_ref || sessionToken,
+      transactionId,
       bdgateSessionToken: sessionToken,
-      bdgateStatus: payload?.status,
-      gateway: payload?.gateway,
-      amount: payload?.amount,
-      currency: payload?.currency || 'BDT',
+      bdgateStatus: payload?.status || gatewayData?.status,
+      gateway: payload?.gateway || gatewayData?.gateway,
+      amount: payload?.amount || gatewayData?.amount,
+      currency: payload?.currency || gatewayData?.currency || 'BDT',
       paymentMethod: 'bdgate',
-      metadata: payload?.metadata,
+      metadata,
     },
     { new: true },
   );

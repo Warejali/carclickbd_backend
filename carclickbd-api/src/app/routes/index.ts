@@ -9,6 +9,7 @@ import { paymentRoutes } from '../modules/payment/payment.routes';
 import { OrderRoutes } from '../modules/order/order.routes';
 import { chatPOST } from '../modules/chat/route';
 import { ContactRoute } from '../modules/contact/contact.route';
+import { auctionSheetRoutes } from '../modules/auctionSheet/auctionSheet.routes';
 
 const router = express.Router();
 
@@ -49,6 +50,10 @@ const moduleRoutes = [
   {
     path: '/contact',
     route: ContactRoute,
+  },
+  {
+    path: '/auction-sheet',
+    route: auctionSheetRoutes,
   },
   // chat module
   {

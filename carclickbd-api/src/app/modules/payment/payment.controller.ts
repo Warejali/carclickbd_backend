@@ -32,6 +32,7 @@ const initBdGatePayment = catchAsync(async (req: Request, res: Response) => {
   const result = await PaymentService.initBdGatePayment(
     {
       ...req.body,
+      backend_url: req.body.backend_url || backendUrl,
       webhook_url:
         req.body.webhook_url || `${backendUrl}/api/v1/payment/bdgate/webhook`,
     },
@@ -55,6 +56,7 @@ const initBdGateAuctionSheetPayment = catchAsync(
     const backendUrl = `${protocol}://${req.get('host')}`;
     const result = await PaymentService.initBdGateAuctionSheetPayment({
       ...req.body,
+      backend_url: req.body.backend_url || backendUrl,
       webhook_url:
         req.body.webhook_url || `${backendUrl}/api/v1/payment/bdgate/webhook`,
     });
