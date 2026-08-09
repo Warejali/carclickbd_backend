@@ -63,6 +63,100 @@ const findAuctionSheetFile = (chassis: string) => {
   return undefined;
 };
 
+const firstValue = (...values: unknown[]) =>
+  values.find(value => {
+    if (value === undefined || value === null) return false;
+    return String(value).trim() !== '';
+  });
+
+const getJpcenterReport = async (chassis: string) => {
+  const apiCode = String(config.jpcenter.api_code || '').trim();
+  if (!apiCode) return null;
+
+  const lookupChassis = chassis.replace(/[^A-Z0-9-]/gi, '');
+  if (!lookupChassis) return null;
+
+  const url = new URL(config.jpcenter.api_base_url);
+  url.searchParams.set('json', '');
+  url.searchParams.set('code', apiCode);
+  url.searchParams.set('chassis', lookupChassis);
+
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(30000),
+    });
+    const responseText = await response.text();
+    let responseBody: any;
+
+    try {
+      responseBody = JSON.parse(responseText);
+    } catch {
+      responseBody = null;
+    }
+
+    if (!response.ok || responseBody?.error) {
+      console.error('[jpcenter] lookup rejected', {
+        status: response.status,
+        message: responseBody?.error || `HTTP ${response.status}`,
+      });
+      return null;
+    }
+
+    const records = Array.isArray(responseBody?.aj)
+      ? responseBody.aj.filter(
+          (record: unknown) => record && typeof record === 'object',
+        )
+      : [];
+    const record = records[0] as Record<string, any> | undefined;
+    if (!record) return null;
+
+    const images = Array.isArray(record.images)
+      ? record.images.filter((image: unknown) => typeof image === 'string')
+      : [];
+
+    return {
+      source: 'JPCenter',
+      maker: firstValue(
+        record.maker,
+        record.make,
+        record.manufacturer,
+        record.car_maker,
+      ),
+      model: firstValue(record.car_model, record.model, record.carModel),
+      title: firstValue(record.title, record.car_model, record.model),
+      year: firstValue(
+        record.car_year,
+        record.year,
+        record.production_year,
+        record.productionYear,
+      ),
+      production_year: firstValue(
+        record.car_year,
+        record.production_year,
+        record.productionYear,
+        record.year,
+      ),
+      mileage: firstValue(record.mileage, record.car_mileage),
+      auction_grade: firstValue(record.car_grade, record.grade, record.auction_grade),
+      color: firstValue(record.car_color, record.color, record.colour),
+      condition: firstValue(
+        record.car_result,
+        record.result,
+        record.status,
+        record.condition,
+      ),
+      image: firstValue(record.image, images[0]),
+      images,
+      history: records,
+    };
+  } catch (error: any) {
+    console.error('[jpcenter] lookup failed', {
+      message: error?.cause?.message || error?.message || 'Unknown error',
+    });
+    return null;
+  }
+};
+
 const getReport = async (rawChassis: unknown) => {
   const chassis = normalizeChassis(rawChassis);
   const compactChassis = chassis.replace(/[^A-Z0-9]/gi, '');
@@ -70,7 +164,8 @@ const getReport = async (rawChassis: unknown) => {
     .split('')
     .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('[- _]*');
-  const product = compactChassis
+  const jpcenterReport = await getJpcenterReport(chassis);
+  const product = !jpcenterReport && compactChassis
     ? await Product.findOne({
         vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
       })
@@ -83,8 +178,8 @@ const getReport = async (rawChassis: unknown) => {
 
   return {
     chassis,
-    found: Boolean(product),
-    report: product
+    found: Boolean(jpcenterReport || product),
+    report: jpcenterReport || (product
       ? {
           maker: product.maker,
           model: product.model,
@@ -96,7 +191,7 @@ const getReport = async (rawChassis: unknown) => {
           color: product.color,
           condition: product.condition,
         }
-      : null,
+      : null),
     download_available: Boolean(sheetFile),
   };
 };

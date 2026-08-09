@@ -30,6 +30,14 @@ export default {
       process.env.BDGATE_API_BASE_URL || 'https://api.bdgate.net/api',
     webhook_secret: process.env.BDGATE_WEBHOOK_SECRET,
   },
+  jpcenter: {
+    api_code:
+      process.env.JPCENTER_API_CODE ||
+      process.env.JPCENTER_API_KEY ||
+      process.env.JPCENTER_CODE,
+    api_base_url:
+      process.env.JPCENTER_API_BASE_URL || 'https://jpcenter.ru/api/report',
+  },
   // google: {
   //   client_id: process.env.GOOGLE_CLIENT_ID,
   //   client_secret: process.env.GOOGLE_CLIENT_SECRET,
