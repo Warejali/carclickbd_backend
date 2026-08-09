@@ -62,6 +62,26 @@ const postToBdGate = async (path: string, payload: Record<string, unknown>) => {
 const getBdGateResponseData = (responseBody: any) =>
   responseBody?.data || responseBody;
 
+const getBdGateErrorMessage = (responseBody: any, status: number) => {
+  const errors = responseBody?.errors;
+  const errorMessage = Array.isArray(errors)
+    ? errors.find(error => typeof error === 'string') ||
+      errors.find(error => typeof error?.message === 'string')?.message
+    : typeof errors === 'string'
+      ? errors
+      : undefined;
+  const message =
+    responseBody?.message ||
+    responseBody?.error ||
+    responseBody?.detail ||
+    errorMessage ||
+    responseBody?.data?.message;
+
+  return typeof message === 'string' && message.trim()
+    ? message.trim()
+    : `BDGate returned HTTP ${status}`;
+};
+
 const mapBdGateStatus = (
   status?: string,
   event?: string,
@@ -219,9 +239,17 @@ const initBdGatePayment = async (data: any, userId: string) => {
   const bdGateData = getBdGateResponseData(responseBody);
 
   if (!response.ok) {
+    console.error('[bdgate] checkout rejected', {
+      status: response.status,
+      message: getBdGateErrorMessage(responseBody, response.status),
+      code: responseBody?.code,
+    });
     throw new ApiError(
       response.status,
-      responseBody?.message || 'BDGate payment session creation failed',
+      `BDGate payment session creation failed: ${getBdGateErrorMessage(
+        responseBody,
+        response.status,
+      )}`,
     );
   }
 
@@ -321,8 +349,10 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
   const bdGatePayload = {
     amount: order.amount,
     currency: 'BDT',
+    order_id: paymentId,
     customer_name: order.name,
     customer_email: order.email,
+    customer_phone: order.mobileNumber,
     description: data?.description || `CarClickBD auction sheet verification for ${chassis}`,
     success_url: successUrl,
     fail_url: failUrl,
@@ -337,9 +367,17 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
   const bdGateData = getBdGateResponseData(responseBody);
 
   if (!response.ok) {
+    console.error('[bdgate] checkout rejected', {
+      status: response.status,
+      message: getBdGateErrorMessage(responseBody, response.status),
+      code: responseBody?.code,
+    });
     throw new ApiError(
       response.status,
-      responseBody?.message || 'BDGate payment session creation failed',
+      `BDGate payment session creation failed: ${getBdGateErrorMessage(
+        responseBody,
+        response.status,
+      )}`,
     );
   }
 

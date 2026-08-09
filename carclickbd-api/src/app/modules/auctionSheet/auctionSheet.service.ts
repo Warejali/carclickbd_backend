@@ -62,9 +62,13 @@ const findAuctionSheetFile = (chassis: string) => {
 
 const getReport = async (rawChassis: unknown) => {
   const chassis = normalizeChassis(rawChassis);
-  const escapedChassis = chassis.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const compactChassis = chassis.replace(/[^A-Z0-9]/gi, '');
+  const chassisPattern = compactChassis
+    .split('')
+    .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[- _]*');
   const product = await Product.findOne({
-    vinChassisNumber: { $regex: `^${escapedChassis}$`, $options: 'i' },
+    vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
   })
     .select(
       'maker model title year productionYear mileage auctionGrade color condition photos.mainPhoto',
