@@ -13,8 +13,11 @@ import { AuctionSheetOrder } from './auctionSheet.model';
 
 const normalizeChassis = (value: unknown) => {
   const chassis = String(value || '').trim().toUpperCase();
-  if (!/^[A-Z0-9][A-Z0-9 _-]{4,39}$/.test(chassis)) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Valid chassis number is required');
+  if (!chassis || chassis.length > 80) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Chassis number is required and must be 80 characters or fewer',
+    );
   }
   return chassis;
 };
@@ -67,13 +70,15 @@ const getReport = async (rawChassis: unknown) => {
     .split('')
     .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('[- _]*');
-  const product = await Product.findOne({
-    vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
-  })
-    .select(
-      'maker model title year productionYear mileage auctionGrade color condition photos.mainPhoto',
-    )
-    .lean();
+  const product = compactChassis
+    ? await Product.findOne({
+        vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
+      })
+        .select(
+          'maker model title year productionYear mileage auctionGrade color condition photos.mainPhoto',
+        )
+        .lean()
+    : null;
   const sheetFile = findAuctionSheetFile(chassis);
 
   return {
