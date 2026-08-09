@@ -7,6 +7,9 @@ import cookieParser from 'cookie-parser';
 import { getUploadRoot, PUBLIC_UPLOAD_PREFIX } from './helper/uploadPath';
 
 const app: Application = express();
+const uploadRoot = getUploadRoot();
+
+console.log(`[uploads] Serving ${PUBLIC_UPLOAD_PREFIX} from ${uploadRoot}`);
 
 app.use(
   cors({
@@ -30,7 +33,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(
   PUBLIC_UPLOAD_PREFIX,
-  express.static(getUploadRoot(), {
+  express.static(uploadRoot, {
     maxAge: '30d',
     immutable: true,
   }),
