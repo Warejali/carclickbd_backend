@@ -4,22 +4,22 @@ import os from 'os';
 
 export const PUBLIC_UPLOAD_PREFIX = '/uploads';
 
-export const getUploadRoot = () => {
+export const getUploadRoots = () => {
   const configuredPath = process.env.UPLOAD_ROOT || process.env.UPLOAD_DIR;
-
-  if (configuredPath) {
-    return path.resolve(configuredPath);
-  }
-
-  // Hostinger Web Apps may run from a deployment/build directory while the
-  // persistent upload folder lives at the hosting account's home directory.
-  // Prefer that persistent location, then support the older relative layout.
+  const home = os.homedir();
   const candidates = [
-    path.join(os.homedir(), 'carclickbd-uploads'),
+    configuredPath ? path.resolve(configuredPath) : null,
+    path.join(home, 'domains', 'carclickbd-backend.jdmcarworld.com', 'carclickbd-uploads'),
+    path.join(home, 'carclickbd-uploads'),
     path.resolve(process.cwd(), '..', 'carclickbd-uploads'),
     path.resolve(process.cwd(), '..', '..', 'carclickbd-uploads'),
     path.resolve(process.cwd(), 'carclickbd-uploads'),
-  ];
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-  return candidates.find(candidate => fs.existsSync(candidate)) || candidates[0];
+  return [...new Set(candidates)];
+};
+
+export const getUploadRoot = () => {
+  const roots = getUploadRoots();
+  return roots.find(candidate => fs.existsSync(candidate)) || roots[0];
 };

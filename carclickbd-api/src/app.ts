@@ -4,12 +4,12 @@ import GlobalErrorHandler from './app/middlewares/GlobalErrorHanlder';
 import handleNotFoundApi from './errors/handleNotFound';
 import router from './app/routes';
 import cookieParser from 'cookie-parser';
-import { getUploadRoot, PUBLIC_UPLOAD_PREFIX } from './helper/uploadPath';
+import { getUploadRoots, PUBLIC_UPLOAD_PREFIX } from './helper/uploadPath';
 
 const app: Application = express();
-const uploadRoot = getUploadRoot();
+const uploadRoots = getUploadRoots();
 
-console.log(`[uploads] Serving ${PUBLIC_UPLOAD_PREFIX} from ${uploadRoot}`);
+console.log(`[uploads] Serving ${PUBLIC_UPLOAD_PREFIX} from: ${uploadRoots.join(' | ')}`);
 
 app.use(
   cors({
@@ -31,13 +31,15 @@ app.get('/', (req, res) => {
 //parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(
-  PUBLIC_UPLOAD_PREFIX,
-  express.static(uploadRoot, {
-    maxAge: '30d',
-    immutable: true,
-  }),
-);
+uploadRoots.forEach(uploadRoot => {
+  app.use(
+    PUBLIC_UPLOAD_PREFIX,
+    express.static(uploadRoot, {
+      maxAge: '30d',
+      immutable: true,
+    }),
+  );
+});
 
 // route
 app.use('/api/v1', router);
