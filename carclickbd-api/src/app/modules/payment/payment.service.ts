@@ -26,10 +26,18 @@ const getBdGateApiBaseUrl = () =>
 const getBdGateUrl = (path: string) =>
   `${getBdGateApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
 
-const createBdGateHeaders = () => ({
-  'Content-Type': 'application/json',
-  'X-API-Key': config.bdgate.api_key || '',
-});
+const createBdGateHeaders = () => {
+  const apiKey = config.bdgate.api_key || '';
+
+  return {
+    'Content-Type': 'application/json',
+    // X-API-Key is used by the REST API reference, while the BDGate Pay
+    // integration guide documents the Bearer form. Sending both keeps the
+    // integration compatible with either account routing mode.
+    'X-API-Key': apiKey,
+    Authorization: `Bearer ${apiKey}`,
+  };
+};
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
