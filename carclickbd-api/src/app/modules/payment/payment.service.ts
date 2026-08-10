@@ -50,7 +50,10 @@ const postToBdGate = async (path: string, payload: Record<string, unknown>) => {
         method: 'POST',
         headers: createBdGateHeaders(),
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(45000),
+        // Keep the public payment flow below Hostinger's gateway timeout. A
+        // stalled BDGate connection should produce a useful retry message,
+        // not a browser-level generic "Network Error" after about a minute.
+        signal: AbortSignal.timeout(10000),
       });
     } catch (error: any) {
       lastReason = error?.cause?.message || error?.message || lastReason;
