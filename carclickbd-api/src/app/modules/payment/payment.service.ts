@@ -235,7 +235,6 @@ const initBdGatePayment = async (data: any, userId: string) => {
       data?.description ||
       `CarClickBD order #${order.orderNumber || order._id}`,
     success_url: successUrl,
-    callback_url: data?.callback_url || webhookUrl || successUrl,
     fail_url:
       data?.fail_url ||
       `${frontendUrl}/payments?status=failed&provider=bdgate&order=${order._id}`,
@@ -371,7 +370,6 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     customer_phone: order.mobileNumber,
     description: data?.description || `CarClickBD auction sheet verification for ${chassis}`,
     success_url: successUrl,
-    callback_url: data?.callback_url || webhookUrl,
     fail_url: failUrl,
     cancel_url: cancelUrl,
     webhook_url: webhookUrl,
