@@ -206,6 +206,13 @@ const initBdGatePayment = async (data: any, userId: string) => {
     order_number: order.orderNumber,
     user_id: user._id.toString(),
   };
+  const webhookUrl =
+    data?.webhook_url ||
+    (backendUrl ? `${backendUrl}/api/v1/payment/bdgate/webhook` : undefined);
+  const successUrl =
+    data?.redirect_url ||
+    data?.success_url ||
+    `${frontendUrl}/payments?status=success&provider=bdgate&order=${order._id}`;
 
   const bdGatePayload = {
     amount: amount.toFixed(2),
@@ -216,10 +223,8 @@ const initBdGatePayment = async (data: any, userId: string) => {
     description:
       data?.description ||
       `CarClickBD order #${order.orderNumber || order._id}`,
-    success_url:
-      data?.redirect_url ||
-      data?.success_url ||
-      `${frontendUrl}/payments?status=success&provider=bdgate&order=${order._id}`,
+    success_url: successUrl,
+    callback_url: data?.callback_url || webhookUrl || successUrl,
     fail_url:
       data?.fail_url ||
       `${frontendUrl}/payments?status=failed&provider=bdgate&order=${order._id}`,
@@ -227,9 +232,7 @@ const initBdGatePayment = async (data: any, userId: string) => {
       data?.cancel_url ||
       data?.fail_url ||
       `${frontendUrl}/payments?status=failed&provider=bdgate&order=${order._id}`,
-    webhook_url:
-      data?.webhook_url ||
-      (backendUrl ? `${backendUrl}/api/v1/payment/bdgate/webhook` : undefined),
+    webhook_url: webhookUrl,
     metadata,
   };
 
@@ -345,6 +348,8 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
   const successUrl = `${frontendUrl}/payments?status=success&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
   const failUrl = `${frontendUrl}/payments?status=failed&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
   const cancelUrl = `${frontendUrl}/payments?status=cancelled&provider=bdgate&type=auction-sheet&payment_id=${paymentId}&chassis=${encodeURIComponent(chassis)}`;
+  const webhookUrl =
+    data?.webhook_url || `${backendUrl}/api/v1/payment/bdgate/webhook`;
 
   const bdGatePayload = {
     amount: order.amount,
@@ -355,9 +360,10 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     customer_phone: order.mobileNumber,
     description: data?.description || `CarClickBD auction sheet verification for ${chassis}`,
     success_url: successUrl,
+    callback_url: data?.callback_url || webhookUrl,
     fail_url: failUrl,
     cancel_url: cancelUrl,
-    webhook_url: data?.webhook_url || `${backendUrl}/api/v1/payment/bdgate/webhook`,
+    webhook_url: webhookUrl,
     metadata,
   };
 
