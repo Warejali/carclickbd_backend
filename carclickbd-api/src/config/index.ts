@@ -38,6 +38,12 @@ export default {
     api_base_url:
       process.env.JPCENTER_API_BASE_URL || 'https://jpcenter.ru/api/report',
   },
+  facebook: {
+    page_id: process.env.FACEBOOK_PAGE_ID,
+    page_access_token: process.env.FACEBOOK_PAGE_ACCESS_TOKEN,
+    graph_api_version: process.env.FACEBOOK_GRAPH_API_VERSION || 'v26.0',
+    auto_post: process.env.FACEBOOK_AUTO_POST !== 'false',
+  },
   // google: {
   //   client_id: process.env.GOOGLE_CLIENT_ID,
   //   client_secret: process.env.GOOGLE_CLIENT_SECRET,

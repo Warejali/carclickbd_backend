@@ -22,6 +22,7 @@ import mongoose from 'mongoose';
 import { User } from '../user/user.model';
 import { ENUM_USER_ROLE } from '../../../enums/role';
 import { NotificationService } from '../notification/notification.service';
+import { facebookService } from '../social/facebook.service';
 
 const hideLastThreeDigits = (value?: string) => {
   if (!value) {
@@ -288,6 +289,10 @@ const createProduct = async (
       itemName: result[0].title,
       message: `New listing added: ${result[0].title}. Review seller listing and status.`,
     });
+
+    // Publishing is intentionally non-blocking: a Facebook API outage must not
+    // make a successfully-created listing fail for the seller.
+    void facebookService.publishProductToFacebook(result[0]);
 
     return result[0];
   } catch (error) {
