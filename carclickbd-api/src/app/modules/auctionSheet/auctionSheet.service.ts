@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import httpStatus from 'http-status';
+import sharp from 'sharp';
+import { PDFDocument } from 'pdf-lib';
 import ApiError from '../../../errors/ApiError';
 import config from '../../../config';
 import { getUploadRoot, getUploadRoots } from '../../../helper/uploadPath';
@@ -111,7 +113,7 @@ const firstValue = (...values: unknown[]) =>
     return String(value).trim() !== '';
   });
 
-const isAllowedJpcenterFileUrl = (rawUrl: string) => {
+const isAllowedJpcenterAssetUrl = (rawUrl: string) => {
   try {
     const url = new URL(rawUrl);
     const hostname = url.hostname.toLowerCase();
@@ -120,12 +122,15 @@ const isAllowedJpcenterFileUrl = (rawUrl: string) => {
       hostname.endsWith('.jpcenter.ru') ||
       hostname === 'ajes.com' ||
       hostname.endsWith('.ajes.com');
-    return (
-      url.protocol === 'https:' && allowedHost && /\.pdf$/i.test(url.pathname)
-    );
+    return url.protocol === 'https:' && allowedHost;
   } catch {
     return false;
   }
+};
+
+const isAllowedJpcenterPdfUrl = (rawUrl: string) => {
+  if (!isAllowedJpcenterAssetUrl(rawUrl)) return false;
+  return /\.pdf$/i.test(new URL(rawUrl).pathname);
 };
 
 const findPdfUrl = (value: unknown): string | undefined => {
@@ -134,12 +139,12 @@ const findPdfUrl = (value: unknown): string | undefined => {
   const visit = (current: unknown): string | undefined => {
     if (typeof current === 'string') {
       const normalized = current.replace(/\\\//g, '/');
-      if (isAllowedJpcenterFileUrl(normalized)) return normalized;
+      if (isAllowedJpcenterPdfUrl(normalized)) return normalized;
 
       const matches = normalized.match(
         /https:\/\/[^\s"'<>]+\.pdf(?:\?[^\s"'<>]*)?/gi,
       );
-      return matches?.find(isAllowedJpcenterFileUrl);
+      return matches?.find(isAllowedJpcenterPdfUrl);
     }
 
     if (!current || typeof current !== 'object' || seen.has(current)) {
@@ -157,7 +162,123 @@ const findPdfUrl = (value: unknown): string | undefined => {
   return visit(value);
 };
 
-const getJpcenterPdfUrl = async (chassis: string, recordKey: string) => {
+const findReportImageUrls = (value: unknown) => {
+  if (!value || typeof value !== 'object') return [];
+
+  const reports = Array.isArray((value as any).aj) ? (value as any).aj : [];
+  const urls = reports.flatMap((report: unknown) => {
+    if (!report || typeof report !== 'object') return [];
+
+    return Object.entries(report as Record<string, unknown>)
+      .filter(
+        ([field, images]) => /^images/i.test(field) && Array.isArray(images),
+      )
+      .flatMap(([, images]) => images as unknown[])
+      .filter((image): image is string => typeof image === 'string')
+      .map(image => image.replace(/\\\//g, '/'))
+      .filter(isAllowedJpcenterAssetUrl);
+  });
+
+  return [...new Set<string>(urls)].slice(0, 12);
+};
+
+const fetchRemoteAsset = async (assetUrl: string) => {
+  if (!isAllowedJpcenterAssetUrl(assetUrl)) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL');
+  }
+
+  const response = await fetch(assetUrl, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      `Auction sheet asset download failed (HTTP ${response.status})`,
+    );
+  }
+
+  const maxBytes = 15 * 1024 * 1024;
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength > maxBytes) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'Auction sheet image is too large',
+    );
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length || buffer.length > maxBytes) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'JPCenter returned an invalid auction sheet image',
+    );
+  }
+  return buffer;
+};
+
+const createPdfFromReportImages = async (imageUrls: string[]) => {
+  if (!imageUrls.length) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'JPCenter returned no auction sheet images',
+    );
+  }
+
+  const imageBuffers: Buffer[] = [];
+  let totalBytes = 0;
+  for (const imageUrl of imageUrls) {
+    const imageBuffer = await fetchRemoteAsset(imageUrl);
+    totalBytes += imageBuffer.length;
+    if (totalBytes > 30 * 1024 * 1024) {
+      throw new ApiError(
+        httpStatus.BAD_GATEWAY,
+        'Auction sheet images are too large',
+      );
+    }
+    imageBuffers.push(imageBuffer);
+  }
+
+  const pdf = await PDFDocument.create();
+  const pageWidth = 595.28;
+  const pageHeight = 841.89;
+  const margin = 18;
+
+  for (const imageBuffer of imageBuffers) {
+    let jpegBuffer: Buffer;
+    try {
+      jpegBuffer = await sharp(imageBuffer)
+        .rotate()
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 92, mozjpeg: true })
+        .toBuffer();
+    } catch {
+      throw new ApiError(
+        httpStatus.BAD_GATEWAY,
+        'JPCenter returned an unreadable auction sheet image',
+      );
+    }
+
+    const embeddedImage = await pdf.embedJpg(jpegBuffer);
+    const scale = Math.min(
+      (pageWidth - margin * 2) / embeddedImage.width,
+      (pageHeight - margin * 2) / embeddedImage.height,
+    );
+    const width = embeddedImage.width * scale;
+    const height = embeddedImage.height * scale;
+    const page = pdf.addPage([pageWidth, pageHeight]);
+    page.drawImage(embeddedImage, {
+      x: (pageWidth - width) / 2,
+      y: (pageHeight - height) / 2,
+      width,
+      height,
+    });
+  }
+
+  return Buffer.from(await pdf.save());
+};
+
+const getJpcenterReportPdf = async (chassis: string, recordKey: string) => {
   const apiCode = String(config.jpcenter.api_code || '').trim();
   if (!apiCode || !recordKey) {
     throw new ApiError(
@@ -190,17 +311,23 @@ const getJpcenterPdfUrl = async (chassis: string, recordKey: string) => {
   }
 
   const pdfUrl = findPdfUrl(responseBody);
-  if (!pdfUrl) {
+  if (pdfUrl) {
+    const remotePdf = await fetchRemotePdf(pdfUrl);
+    return { buffer: remotePdf.buffer, pdfUrl };
+  }
+
+  const reportImageUrls = findReportImageUrls(responseBody);
+  if (!reportImageUrls.length) {
     throw new ApiError(
       httpStatus.BAD_GATEWAY,
-      'JPCenter returned the report but no PDF download link was found',
+      'JPCenter returned the report but no downloadable auction sheet was found',
     );
   }
-  return pdfUrl;
+  return { buffer: await createPdfFromReportImages(reportImageUrls) };
 };
 
 const fetchRemotePdf = async (pdfUrl: string) => {
-  if (!isAllowedJpcenterFileUrl(pdfUrl)) {
+  if (!isAllowedJpcenterPdfUrl(pdfUrl)) {
     throw new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL');
   }
 
@@ -512,23 +639,29 @@ const prepareAuctionSheetFile = async (id: string) => {
       if (recoveredKey) order.jpcenterRecordKey = recoveredKey;
     }
 
-    let pdfUrl = String(order.jpcenterPdfUrl || '').trim();
-    if (!pdfUrl && order.jpcenterRecordKey) {
-      pdfUrl = await getJpcenterPdfUrl(order.chassis, order.jpcenterRecordKey);
-      order.jpcenterPdfUrl = pdfUrl;
+    const savedPdfUrl = String(order.jpcenterPdfUrl || '').trim();
+    let reportPdf: { buffer: Buffer; pdfUrl?: string } | undefined;
+    if (savedPdfUrl) {
+      const remotePdf = await fetchRemotePdf(savedPdfUrl);
+      reportPdf = { buffer: remotePdf.buffer, pdfUrl: savedPdfUrl };
+    } else if (order.jpcenterRecordKey) {
+      reportPdf = await getJpcenterReportPdf(
+        order.chassis,
+        order.jpcenterRecordKey,
+      );
+      if (reportPdf.pdfUrl) order.jpcenterPdfUrl = reportPdf.pdfUrl;
     }
 
-    if (!pdfUrl) {
+    if (!reportPdf) {
       throw new ApiError(
         httpStatus.NOT_FOUND,
         'Auction sheet is not available from JPCenter. Payment was not created',
       );
     }
 
-    const remoteFile = await fetchRemotePdf(pdfUrl);
     const filePath = await persistAuctionSheetPdf(
       order.chassis,
-      remoteFile.buffer,
+      reportPdf.buffer,
     );
     order.jpcenterReportFetchedAt = new Date();
     await order.save();
