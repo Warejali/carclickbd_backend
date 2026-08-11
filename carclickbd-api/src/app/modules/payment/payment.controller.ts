@@ -8,6 +8,7 @@ import { PaymentService } from './payment.service';
 import { IPayment, IPaymentFilterableField } from './payment.interface';
 import { paginationFields } from '../../../constant/pagination';
 import { JwtPayload } from 'jsonwebtoken';
+import { AuctionSheetService } from '../auctionSheet/auctionSheet.service';
 
 const initPayment = catchAsync(async (req: Request, res: Response) => {
   const { ...data } = req.body;
@@ -84,6 +85,28 @@ const bdGateWebhook = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const syncBdGateAuctionSheetPaymentStatus = catchAsync(
+  async (req: Request, res: Response) => {
+    await PaymentService.syncBdGateAuctionSheetPaymentStatus(req.params.id);
+    const forwardedProtocol = req.headers['x-forwarded-proto'] as
+      | string
+      | undefined;
+    const protocol = forwardedProtocol?.split(',')[0] || req.protocol;
+    const backendUrl = `${protocol}://${req.get('host')}`;
+    const result = await AuctionSheetService.getPaymentStatus(
+      req.params.id,
+      backendUrl,
+    );
+
+    sendResponse(res, {
+      success: true,
+      statusCode: httpStatus.OK,
+      message: 'BDGate auction sheet payment status synced successfully',
+      data: result,
+    });
+  },
+);
+
 const syncBdGatePaymentStatus = catchAsync(
   async (req: Request, res: Response) => {
     const result = await PaymentService.syncBdGatePaymentStatus(
@@ -148,6 +171,7 @@ export const PaymentController = {
   initBdGatePayment,
   initBdGateAuctionSheetPayment,
   bdGateWebhook,
+  syncBdGateAuctionSheetPaymentStatus,
   syncBdGatePaymentStatus,
   getAllFromDB,
   getByIdFromDB,

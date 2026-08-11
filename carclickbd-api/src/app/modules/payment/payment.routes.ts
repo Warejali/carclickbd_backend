@@ -16,6 +16,10 @@ router.get(
   PaymentController.getAllFromDB,
 );
 router.post('/bdgate/webhook', PaymentController.bdGateWebhook);
+router.get(
+  '/bdgate/auction-sheet/status/:id',
+  PaymentController.syncBdGateAuctionSheetPaymentStatus,
+);
 router.post(
   '/bdgate/auction-sheet',
   PaymentController.initBdGateAuctionSheetPayment,

@@ -70,6 +70,53 @@ const postToBdGate = async (path: string, payload: Record<string, unknown>) => {
   );
 };
 
+const createBdGateSession = async (payload: Record<string, unknown>) => {
+  // Use the current BDGate Pay endpoint and retain the legacy endpoint as a
+  // compatibility fallback for accounts that are still on the v1 flow.
+  const response = await postToBdGate('/bdgate-pay/create-session', payload);
+  if (
+    response.status === httpStatus.NOT_FOUND ||
+    response.status === httpStatus.METHOD_NOT_ALLOWED
+  ) {
+    return postToBdGate('/v1/checkout', payload);
+  }
+  return response;
+};
+
+const getBdGateSessionStatus = async (sessionToken: string) => {
+  let response = await fetch(
+    getBdGateUrl(`/public/pay/${encodeURIComponent(sessionToken)}/status`),
+    {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    },
+  );
+
+  // Older BDGate accounts expose the v1 verification endpoint instead of the
+  // public hosted-session status endpoint.
+  if (
+    response.status === httpStatus.NOT_FOUND ||
+    response.status === httpStatus.METHOD_NOT_ALLOWED
+  ) {
+    response = await postToBdGate('/v1/payment/verify', {
+      transaction_id: sessionToken,
+      session_id: sessionToken,
+    });
+  }
+
+  const responseBody = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      getBdGateErrorMessage(responseBody, response.status),
+    );
+  }
+
+  return getBdGateResponseData(responseBody);
+};
+
 const getBdGateResponseData = (responseBody: any) =>
   responseBody?.data || responseBody;
 
@@ -125,8 +172,14 @@ const mapBdGateStatus = (
 
 const verifyBdGateSignature = (payload: unknown, signature?: string) => {
   const secret = config.bdgate.webhook_secret || config.bdgate.api_key;
-  if (!secret || !signature) {
-    return config.env !== 'production';
+  // BDGate Pay's documented webhook payload does not include a signature.
+  // If one is supplied, validate it; otherwise the payment status is checked
+  // server-to-server before access is granted.
+  if (!signature) {
+    return true;
+  }
+  if (!secret) {
+    return false;
   }
 
   const digest = crypto
@@ -246,7 +299,7 @@ const initBdGatePayment = async (data: any, userId: string) => {
     metadata,
   };
 
-  const response = await postToBdGate('/v1/checkout', bdGatePayload);
+  const response = await createBdGateSession(bdGatePayload);
 
   const responseBody = await response.json().catch(() => null);
   const bdGateData = getBdGateResponseData(responseBody);
@@ -330,12 +383,18 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
 
   const orderId = data?.orderId || data?.order_id;
   if (!orderId) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Auction sheet order id is required');
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Auction sheet order id is required',
+    );
   }
 
   const order = await AuctionSheetService.getOrderById(orderId);
   if (order.status === 'PAID') {
-    throw new ApiError(httpStatus.CONFLICT, 'Auction sheet order is already paid');
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      'Auction sheet order is already paid',
+    );
   }
 
   const frontendUrl = getAppUrl(config.frontend_url) || 'http://localhost:3000';
@@ -368,7 +427,9 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     customer_name: order.name,
     customer_email: order.email,
     customer_phone: order.mobileNumber,
-    description: data?.description || `CarClickBD auction sheet verification for ${chassis}`,
+    description:
+      data?.description ||
+      `CarClickBD auction sheet verification for ${chassis}`,
     success_url: successUrl,
     fail_url: failUrl,
     cancel_url: cancelUrl,
@@ -376,7 +437,7 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     metadata,
   };
 
-  const response = await postToBdGate('/v1/checkout', bdGatePayload);
+  const response = await createBdGateSession(bdGatePayload);
 
   const responseBody = await response.json().catch(() => null);
   const bdGateData = getBdGateResponseData(responseBody);
@@ -453,13 +514,15 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
   const gatewayData =
     payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   const metadata = payload?.metadata || gatewayData?.metadata;
-  const paymentStatus = mapBdGateStatus(
+  let paymentStatus = mapBdGateStatus(
     payload?.status || gatewayData?.status,
     payload?.event || gatewayData?.event,
   );
   const orderId = metadata?.order_id || gatewayData?.order_id;
   const sessionToken =
-    payload?.session_token || gatewayData?.session_token || gatewayData?.session_id;
+    payload?.session_token ||
+    gatewayData?.session_token ||
+    gatewayData?.session_id;
   const transactionId =
     payload?.tx_ref ||
     gatewayData?.tx_ref ||
@@ -473,6 +536,25 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
     );
   }
 
+  if (paymentStatus === 'PAID' && !sessionToken) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'BDGate session token is required to confirm payment',
+    );
+  }
+
+  if (sessionToken) {
+    const verifiedStatus = await getBdGateSessionStatus(sessionToken);
+    const verifiedPaymentStatus = mapBdGateStatus(verifiedStatus?.status);
+    if (paymentStatus === 'PAID' && verifiedPaymentStatus !== 'PAID') {
+      throw new ApiError(
+        httpStatus.BAD_GATEWAY,
+        'BDGate webhook arrived before the payment was confirmed',
+      );
+    }
+    paymentStatus = verifiedPaymentStatus;
+  }
+
   const auctionSheetOrder =
     (orderId && mongoose.isValidObjectId(orderId)
       ? await AuctionSheetOrder.findById(orderId)
@@ -481,7 +563,10 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
       ? await AuctionSheetOrder.findOne({ bdgateSessionToken: sessionToken })
       : null);
 
-  if (auctionSheetOrder || metadata?.payment_type === 'auction_sheet_verification') {
+  if (
+    auctionSheetOrder ||
+    metadata?.payment_type === 'auction_sheet_verification'
+  ) {
     const updatedOrder = await AuctionSheetService.updatePayment({
       orderId,
       sessionToken,
@@ -522,19 +607,7 @@ const handleBdGateWebhook = async (payload: any, signature?: string) => {
 };
 
 const syncBdGatePaymentStatus = async (sessionToken: string) => {
-  const response = await postToBdGate('/payment/verify', {
-    transaction_id: sessionToken,
-    session_id: sessionToken,
-  });
-  const responseBody = await response.json().catch(() => null);
-  const bdGateData = getBdGateResponseData(responseBody);
-
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      responseBody?.message || 'BDGate payment status check failed',
-    );
-  }
+  const bdGateData = await getBdGateSessionStatus(sessionToken);
 
   const paymentStatus = mapBdGateStatus(bdGateData?.status);
   const payment = await Payment.findOneAndUpdate(
@@ -554,6 +627,44 @@ const syncBdGatePaymentStatus = async (sessionToken: string) => {
   }
 
   return { bdgate: bdGateData, payment };
+};
+
+const syncBdGateAuctionSheetPaymentStatus = async (orderId: string) => {
+  const order = await AuctionSheetService.getOrderById(orderId);
+  if (
+    !order.bdgateSessionToken ||
+    order.status === 'PAID' ||
+    order.status === 'FAILED' ||
+    order.status === 'CANCELLED'
+  ) {
+    return order;
+  }
+
+  try {
+    const bdGateData = await getBdGateSessionStatus(order.bdgateSessionToken);
+    const paymentStatus = mapBdGateStatus(bdGateData?.status);
+    const transactionId =
+      bdGateData?.tx_ref ||
+      bdGateData?.transaction_id ||
+      order.bdgateSessionToken;
+
+    return AuctionSheetService.updatePayment({
+      orderId: order._id?.toString(),
+      sessionToken: order.bdgateSessionToken,
+      status: paymentStatus,
+      gatewayStatus: bdGateData?.status,
+      transactionId,
+      metadata: order.metadata,
+    });
+  } catch (error: any) {
+    // A temporary BDGate status outage must not turn a paid order into a
+    // failed order. The next poll or webhook retry can reconcile it.
+    console.error('[bdgate] auction-sheet status sync failed', {
+      orderId,
+      message: error?.message || 'Unknown error',
+    });
+    return order;
+  }
 };
 
 // const createPayment = async (payload: IPayment): Promise<IPayment> => {
@@ -663,6 +774,7 @@ export const PaymentService = {
   initBdGateAuctionSheetPayment,
   handleBdGateWebhook,
   syncBdGatePaymentStatus,
+  syncBdGateAuctionSheetPaymentStatus,
   getAllFromDB,
   getByIdFromDB,
   createPayment,

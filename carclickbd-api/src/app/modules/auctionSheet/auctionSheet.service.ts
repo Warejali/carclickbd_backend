@@ -12,7 +12,9 @@ import {
 import { AuctionSheetOrder } from './auctionSheet.model';
 
 const normalizeChassis = (value: unknown) => {
-  const chassis = String(value || '').trim().toUpperCase();
+  const chassis = String(value || '')
+    .trim()
+    .toUpperCase();
   if (!chassis || chassis.length > 80) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
@@ -137,7 +139,11 @@ const getJpcenterReport = async (chassis: string) => {
         record.year,
       ),
       mileage: firstValue(record.mileage, record.car_mileage),
-      auction_grade: firstValue(record.car_grade, record.grade, record.auction_grade),
+      auction_grade: firstValue(
+        record.car_grade,
+        record.grade,
+        record.auction_grade,
+      ),
       color: firstValue(record.car_color, record.color, record.colour),
       condition: firstValue(
         record.car_result,
@@ -165,33 +171,36 @@ const getReport = async (rawChassis: unknown) => {
     .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('[- _]*');
   const jpcenterReport = await getJpcenterReport(chassis);
-  const product = !jpcenterReport && compactChassis
-    ? await Product.findOne({
-        vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
-      })
-        .select(
-          'maker model title year productionYear mileage auctionGrade color condition photos.mainPhoto',
-        )
-        .lean()
-    : null;
+  const product =
+    !jpcenterReport && compactChassis
+      ? await Product.findOne({
+          vinChassisNumber: { $regex: `^${chassisPattern}$`, $options: 'i' },
+        })
+          .select(
+            'maker model title year productionYear mileage auctionGrade color condition photos.mainPhoto',
+          )
+          .lean()
+      : null;
   const sheetFile = findAuctionSheetFile(chassis);
 
   return {
     chassis,
     found: Boolean(jpcenterReport || product),
-    report: jpcenterReport || (product
-      ? {
-          maker: product.maker,
-          model: product.model,
-          title: product.title,
-          year: product.year,
-          production_year: product.productionYear,
-          mileage: product.mileage,
-          auction_grade: product.auctionGrade,
-          color: product.color,
-          condition: product.condition,
-        }
-      : null),
+    report:
+      jpcenterReport ||
+      (product
+        ? {
+            maker: product.maker,
+            model: product.model,
+            title: product.title,
+            year: product.year,
+            production_year: product.productionYear,
+            mileage: product.mileage,
+            auction_grade: product.auctionGrade,
+            color: product.color,
+            condition: product.condition,
+          }
+        : null),
     download_available: Boolean(sheetFile),
   };
 };
@@ -199,12 +208,17 @@ const getReport = async (rawChassis: unknown) => {
 const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
   const chassis = normalizeChassis(payload.chassis);
   const name = String(payload.name || '').trim();
-  const email = String(payload.email || '').trim().toLowerCase();
+  const email = String(payload.email || '')
+    .trim()
+    .toLowerCase();
   const mobileNumber = String(payload.mobileNumber || '').trim();
   const address = String(payload.address || '').trim();
 
   if (!name || !email || !mobileNumber || !address) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'All customer details are required');
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'All customer details are required',
+    );
   }
   if (!/^\S+@\S+\.\S+$/.test(email)) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Valid email is required');
@@ -213,9 +227,19 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Terms must be accepted');
   }
 
+  if (!findAuctionSheetFile(chassis)) {
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      'Auction sheet file is not available for this chassis. Payment was not created',
+    );
+  }
+
   const amount = Number(config.auction_sheet_price_bdt);
   if (!Number.isFinite(amount) || amount <= 0) {
-    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Auction sheet price is not configured');
+    throw new ApiError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      'Auction sheet price is not configured',
+    );
   }
 
   return AuctionSheetOrder.create({
@@ -234,7 +258,8 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
 
 const getOrderById = async (id: string) => {
   const order = await AuctionSheetOrder.findById(id);
-  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Auction sheet order not found');
+  if (!order)
+    throw new ApiError(httpStatus.NOT_FOUND, 'Auction sheet order not found');
   return order;
 };
 
@@ -285,12 +310,18 @@ const getPaymentStatus = async (id: string, backendUrl: string) => {
 const getDownloadFile = async (id: string) => {
   const order = await getOrderById(id);
   if (order.status !== 'PAID') {
-    throw new ApiError(httpStatus.FORBIDDEN, 'Auction sheet is available after payment confirmation');
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      'Auction sheet is available after payment confirmation',
+    );
   }
 
   const filePath = findAuctionSheetFile(order.chassis);
   if (!filePath) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Auction sheet file is not available yet');
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      'Auction sheet file is not available yet',
+    );
   }
 
   return { filePath, chassis: order.chassis };
