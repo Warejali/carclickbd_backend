@@ -3,7 +3,7 @@ import path from 'path';
 import httpStatus from 'http-status';
 import ApiError from '../../../errors/ApiError';
 import config from '../../../config';
-import { getUploadRoot } from '../../../helper/uploadPath';
+import { getUploadRoot, getUploadRoots } from '../../../helper/uploadPath';
 import { Product } from '../product/product.model';
 import {
   IAuctionSheetOrder,
@@ -30,13 +30,50 @@ const normalizedFileName = (value: string) =>
 const compactFileName = (value: string) =>
   normalizedFileName(value).replace(/[_-]/g, '');
 
+const preparationByChassis = new Map<string, Promise<string>>();
+
+const isValidLocalSheetFile = (filePath: string) => {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size < 100) return false;
+
+    if (path.extname(filePath).toLowerCase() === '.pdf') {
+      const descriptor = fs.openSync(filePath, 'r');
+      const signature = Buffer.alloc(5);
+      fs.readSync(descriptor, signature, 0, signature.length, 0);
+      fs.closeSync(descriptor);
+      return signature.toString() === '%PDF-';
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const getSheetRoot = () => {
   const configuredRoot = String(config.auction_sheet_root || '').trim();
-  if (configuredRoot && configuredRoot !== '/auction-sheets') {
-    return path.resolve(configuredRoot);
+  const publicRoots = getUploadRoots().map(root => path.resolve(root));
+  const configuredPath = configuredRoot
+    ? path.resolve(configuredRoot)
+    : undefined;
+  const isPublicPath = configuredPath
+    ? publicRoots.some(publicRoot => {
+        const relative = path.relative(publicRoot, configuredPath);
+        return (
+          relative === '' ||
+          (!relative.startsWith('..') && !path.isAbsolute(relative))
+        );
+      })
+    : false;
+
+  if (configuredPath && !isPublicPath) {
+    return configuredPath;
   }
 
-  return path.join(getUploadRoot(), 'auction-sheets');
+  // Auction sheets are paid files. Never place them under a directory exposed
+  // by Express at /uploads, even if an old environment variable points there.
+  return path.join(path.dirname(getUploadRoot()), 'carclickbd-auction-sheets');
 };
 
 const findAuctionSheetFile = (chassis: string) => {
@@ -50,7 +87,7 @@ const findAuctionSheetFile = (chassis: string) => {
   for (const safeName of safeNames) {
     for (const extension of extensions) {
       const candidate = path.join(root, `${safeName}${extension}`);
-      if (fs.existsSync(candidate)) return candidate;
+      if (isValidLocalSheetFile(candidate)) return candidate;
     }
   }
 
@@ -59,7 +96,10 @@ const findAuctionSheetFile = (chassis: string) => {
     const nestedFile = fs
       .readdirSync(chassisDirectory)
       .find(file => extensions.includes(path.extname(file).toLowerCase()));
-    if (nestedFile) return path.join(chassisDirectory, nestedFile);
+    if (nestedFile) {
+      const nestedPath = path.join(chassisDirectory, nestedFile);
+      if (isValidLocalSheetFile(nestedPath)) return nestedPath;
+    }
   }
 
   return undefined;
@@ -199,6 +239,34 @@ const fetchRemotePdf = async (pdfUrl: string) => {
     buffer,
     contentType: response.headers.get('content-type') || 'application/pdf',
   };
+};
+
+const persistAuctionSheetPdf = async (chassis: string, buffer: Buffer) => {
+  const root = getSheetRoot();
+  await fs.promises.mkdir(root, { recursive: true });
+
+  const targetPath = path.join(root, `${normalizedFileName(chassis)}.pdf`);
+  if (isValidLocalSheetFile(targetPath)) return targetPath;
+
+  const temporaryPath = `${targetPath}.${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}.tmp`;
+  await fs.promises.writeFile(temporaryPath, buffer, { flag: 'wx' });
+
+  try {
+    await fs.promises.rename(temporaryPath, targetPath);
+  } catch (error) {
+    await fs.promises.unlink(temporaryPath).catch(() => undefined);
+    if (!isValidLocalSheetFile(targetPath)) throw error;
+  }
+
+  if (!isValidLocalSheetFile(targetPath)) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'Auction sheet PDF could not be stored safely',
+    );
+  }
+  return targetPath;
 };
 
 const getJpcenterReport = async (chassis: string) => {
@@ -407,6 +475,15 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
     jpcenterRecordKey: jpcenterRecordKey || undefined,
   });
 
+  try {
+    await prepareAuctionSheetFile(createdOrder._id.toString());
+  } catch (error) {
+    await AuctionSheetOrder.findByIdAndDelete(createdOrder._id).catch(
+      () => undefined,
+    );
+    throw error;
+  }
+
   return AuctionSheetOrder.findById(createdOrder._id);
 };
 
@@ -419,6 +496,55 @@ const getOrderById = async (id: string) => {
   return order;
 };
 
+const prepareAuctionSheetFile = async (id: string) => {
+  const order = await getOrderById(id);
+  const existingFile = findAuctionSheetFile(order.chassis);
+  if (existingFile) return existingFile;
+
+  const preparationKey = normalizedFileName(order.chassis);
+  const runningPreparation = preparationByChassis.get(preparationKey);
+  if (runningPreparation) return runningPreparation;
+
+  const preparation = (async () => {
+    if (!order.jpcenterRecordKey && !order.jpcenterPdfUrl) {
+      const jpcenterReport = await getJpcenterReport(order.chassis);
+      const recoveredKey = String(jpcenterReport?.record_key || '').trim();
+      if (recoveredKey) order.jpcenterRecordKey = recoveredKey;
+    }
+
+    let pdfUrl = String(order.jpcenterPdfUrl || '').trim();
+    if (!pdfUrl && order.jpcenterRecordKey) {
+      pdfUrl = await getJpcenterPdfUrl(order.chassis, order.jpcenterRecordKey);
+      order.jpcenterPdfUrl = pdfUrl;
+    }
+
+    if (!pdfUrl) {
+      throw new ApiError(
+        httpStatus.NOT_FOUND,
+        'Auction sheet is not available from JPCenter. Payment was not created',
+      );
+    }
+
+    const remoteFile = await fetchRemotePdf(pdfUrl);
+    const filePath = await persistAuctionSheetPdf(
+      order.chassis,
+      remoteFile.buffer,
+    );
+    order.jpcenterReportFetchedAt = new Date();
+    await order.save();
+    return filePath;
+  })();
+
+  preparationByChassis.set(preparationKey, preparation);
+  try {
+    return await preparation;
+  } finally {
+    if (preparationByChassis.get(preparationKey) === preparation) {
+      preparationByChassis.delete(preparationKey);
+    }
+  }
+};
+
 const updatePayment = async (params: {
   orderId?: string;
   sessionToken?: string;
@@ -427,14 +553,13 @@ const updatePayment = async (params: {
   transactionId?: string;
   metadata?: Record<string, unknown>;
 }) => {
-  const filters = [];
-  if (params.orderId) filters.push({ _id: params.orderId });
-  if (params.sessionToken) {
-    filters.push({ bdgateSessionToken: params.sessionToken });
-  }
-  if (!filters.length) return null;
+  if (!params.orderId && !params.sessionToken) return null;
 
-  const current = await AuctionSheetOrder.findOne({ $or: filters });
+  const filter: Record<string, unknown> = {};
+  if (params.orderId) filter._id = params.orderId;
+  if (params.sessionToken) filter.bdgateSessionToken = params.sessionToken;
+
+  const current = await AuctionSheetOrder.findOne(filter);
   if (!current || current.status === 'PAID') return current;
 
   current.status = params.status;
@@ -447,28 +572,27 @@ const updatePayment = async (params: {
 
 const getPaymentStatus = async (id: string, backendUrl: string) => {
   const order = await getOrderById(id);
-  const sheetFile = findAuctionSheetFile(order.chassis);
   const paid = order.status === 'PAID';
-  if (paid && !sheetFile && !order.jpcenterRecordKey && !order.jpcenterPdfUrl) {
-    const jpcenterReport = await getJpcenterReport(order.chassis);
-    const recoveredKey = String(jpcenterReport?.record_key || '').trim();
-    if (recoveredKey) {
-      order.jpcenterRecordKey = recoveredKey;
-      await order.save();
+  let sheetFile = findAuctionSheetFile(order.chassis);
+  if (paid && !sheetFile) {
+    try {
+      sheetFile = await prepareAuctionSheetFile(id);
+    } catch (error: any) {
+      console.error('[auction-sheet] paid report preparation failed', {
+        orderId: id,
+        message: error?.message || 'Unknown error',
+      });
     }
   }
-  const remoteAvailable = Boolean(
-    order.jpcenterRecordKey || order.jpcenterPdfUrl,
-  );
 
   return {
     payment_id: order._id,
     status: order.status,
     paid,
     chassis: order.chassis,
-    download_available: paid && Boolean(sheetFile || remoteAvailable),
+    download_available: paid && Boolean(sheetFile),
     download_url:
-      paid && (sheetFile || remoteAvailable)
+      paid && sheetFile
         ? `${backendUrl}/api/v1/auction-sheet/download/${order._id}`
         : undefined,
   };
@@ -483,35 +607,14 @@ const getDownloadFile = async (id: string) => {
     );
   }
 
-  const filePath = findAuctionSheetFile(order.chassis);
+  let filePath = findAuctionSheetFile(order.chassis);
+  if (!filePath) filePath = await prepareAuctionSheetFile(id);
   if (filePath) return { filePath, chassis: order.chassis };
 
-  if (!order.jpcenterRecordKey && !order.jpcenterPdfUrl) {
-    const jpcenterReport = await getJpcenterReport(order.chassis);
-    const recoveredKey = String(jpcenterReport?.record_key || '').trim();
-    if (recoveredKey) {
-      order.jpcenterRecordKey = recoveredKey;
-      await order.save();
-    }
-  }
-
-  let pdfUrl = String(order.jpcenterPdfUrl || '').trim();
-  if (!pdfUrl && order.jpcenterRecordKey) {
-    pdfUrl = await getJpcenterPdfUrl(order.chassis, order.jpcenterRecordKey);
-    order.jpcenterPdfUrl = pdfUrl;
-    order.jpcenterReportFetchedAt = new Date();
-    await order.save();
-  }
-
-  if (!pdfUrl) {
-    throw new ApiError(
-      httpStatus.NOT_FOUND,
-      'Auction sheet is not available from JPCenter',
-    );
-  }
-
-  const remoteFile = await fetchRemotePdf(pdfUrl);
-  return { ...remoteFile, chassis: order.chassis };
+  throw new ApiError(
+    httpStatus.NOT_FOUND,
+    'Auction sheet file is not available',
+  );
 };
 
 export const AuctionSheetService = {
@@ -519,6 +622,7 @@ export const AuctionSheetService = {
   getReport,
   createOrder,
   getOrderById,
+  prepareAuctionSheetFile,
   updatePayment,
   getPaymentStatus,
   getDownloadFile,

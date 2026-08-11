@@ -46,17 +46,6 @@ const getPaymentStatus = catchAsync(async (req: Request, res: Response) => {
 const download = catchAsync(async (req: Request, res: Response) => {
   const file = await AuctionSheetService.getDownloadFile(req.params.id);
 
-  if ('buffer' in file) {
-    res.setHeader('Content-Type', file.contentType || 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="auction-sheet-${file.chassis}.pdf"`,
-    );
-    res.setHeader('Content-Length', file.buffer.length);
-    res.send(file.buffer);
-    return;
-  }
-
   const extension = path.extname(file.filePath) || '.pdf';
   res.download(
     file.filePath,

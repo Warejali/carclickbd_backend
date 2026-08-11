@@ -1,4 +1,4 @@
-import express, { Application } from 'express';
+import express, { Application, Request } from 'express';
 import cors from 'cors';
 import GlobalErrorHandler from './app/middlewares/GlobalErrorHanlder';
 import handleNotFoundApi from './errors/handleNotFound';
@@ -9,7 +9,9 @@ import { getUploadRoots, PUBLIC_UPLOAD_PREFIX } from './helper/uploadPath';
 const app: Application = express();
 const uploadRoots = getUploadRoots();
 
-console.log(`[uploads] Serving ${PUBLIC_UPLOAD_PREFIX} from: ${uploadRoots.join(' | ')}`);
+console.log(
+  `[uploads] Serving ${PUBLIC_UPLOAD_PREFIX} from: ${uploadRoots.join(' | ')}`,
+);
 
 app.use(
   cors({
@@ -29,7 +31,13 @@ app.get('/', (req, res) => {
   res.send('Server Working successfully');
 });
 //parser
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, _res, buffer) => {
+      (req as Request).rawBody = Buffer.from(buffer);
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true }));
 uploadRoots.forEach(uploadRoot => {
   app.use(

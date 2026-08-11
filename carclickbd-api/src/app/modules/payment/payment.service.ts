@@ -71,38 +71,41 @@ const postToBdGate = async (path: string, payload: Record<string, unknown>) => {
 };
 
 const createBdGateSession = async (payload: Record<string, unknown>) => {
-  // Use the current BDGate Pay endpoint and retain the legacy endpoint as a
-  // compatibility fallback for accounts that are still on the v1 flow.
-  const response = await postToBdGate('/bdgate-pay/create-session', payload);
+  // BDGate recommends the unified v1 checkout endpoint. Keep the older
+  // BDGate Pay endpoint only as a compatibility fallback.
+  const response = await postToBdGate('/v1/checkout', payload);
   if (
     response.status === httpStatus.NOT_FOUND ||
     response.status === httpStatus.METHOD_NOT_ALLOWED
   ) {
-    return postToBdGate('/v1/checkout', payload);
+    return postToBdGate('/bdgate-pay/create-session', payload);
   }
   return response;
 };
 
 const getBdGateSessionStatus = async (sessionToken: string) => {
   let response = await fetch(
-    getBdGateUrl(`/public/pay/${encodeURIComponent(sessionToken)}/status`),
+    getBdGateUrl(`/bdgate-pay/sessions/${encodeURIComponent(sessionToken)}`),
     {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: createBdGateHeaders(),
       signal: AbortSignal.timeout(10000),
     },
   );
 
-  // Older BDGate accounts expose the v1 verification endpoint instead of the
-  // public hosted-session status endpoint.
+  // Older BDGate Pay installations expose a public hosted-session endpoint.
   if (
     response.status === httpStatus.NOT_FOUND ||
     response.status === httpStatus.METHOD_NOT_ALLOWED
   ) {
-    response = await postToBdGate('/v1/payment/verify', {
-      transaction_id: sessionToken,
-      session_id: sessionToken,
-    });
+    response = await fetch(
+      getBdGateUrl(`/public/pay/${encodeURIComponent(sessionToken)}/status`),
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
   }
 
   const responseBody = await response.json().catch(() => null);
@@ -170,21 +173,66 @@ const mapBdGateStatus = (
   return 'PENDING';
 };
 
-const verifyBdGateSignature = (payload: unknown, signature?: string) => {
-  const secret = config.bdgate.webhook_secret || config.bdgate.api_key;
-  // BDGate Pay's documented webhook payload does not include a signature.
-  // If one is supplied, validate it; otherwise the payment status is checked
-  // server-to-server before access is granted.
-  if (!signature) {
-    return true;
+const assertAuctionSheetSessionMatches = (
+  order: any,
+  bdGateData: any,
+  expectedToken: string,
+) => {
+  const remoteToken = String(
+    bdGateData?.session_token ||
+      bdGateData?.session_id ||
+      bdGateData?.token ||
+      '',
+  ).trim();
+  if (remoteToken && remoteToken !== expectedToken) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'BDGate session token does not match this auction-sheet order',
+    );
   }
-  if (!secret) {
-    return false;
+
+  const remoteOrderId = String(
+    bdGateData?.order_id || bdGateData?.metadata?.order_id || '',
+  ).trim();
+  if (remoteOrderId && remoteOrderId !== order._id.toString()) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'BDGate order reference does not match this auction-sheet order',
+    );
   }
+
+  const remoteAmount = Number(bdGateData?.amount);
+  if (
+    Number.isFinite(remoteAmount) &&
+    Math.abs(remoteAmount - Number(order.amount)) > 0.009
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'BDGate payment amount does not match this auction-sheet order',
+    );
+  }
+
+  const remoteCurrency = String(bdGateData?.currency || '').toUpperCase();
+  if (remoteCurrency && remoteCurrency !== 'BDT') {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'BDGate payment currency does not match this auction-sheet order',
+    );
+  }
+};
+
+const verifyBdGateSignature = (
+  payload: unknown,
+  signature?: string,
+  rawBody?: Buffer,
+) => {
+  const secret = config.bdgate.webhook_secret;
+  if (!secret) return !signature;
+  if (!signature) return false;
 
   const digest = crypto
     .createHmac('sha256', secret)
-    .update(JSON.stringify(payload))
+    .update(rawBody || Buffer.from(JSON.stringify(payload)))
     .digest('hex');
 
   const digestBuffer = Buffer.from(digest);
@@ -397,6 +445,67 @@ const initBdGateAuctionSheetPayment = async (data: any) => {
     );
   }
 
+  // The customer must never reach BDGate unless a validated PDF already
+  // exists in persistent storage. This removes JPCenter from the post-payment
+  // critical path.
+  await AuctionSheetService.prepareAuctionSheetFile(orderId);
+
+  if (order.bdgateSessionToken && order.bdgatePaymentUrl) {
+    try {
+      const existingSession = await getBdGateSessionStatus(
+        order.bdgateSessionToken,
+      );
+      assertAuctionSheetSessionMatches(
+        order,
+        existingSession,
+        order.bdgateSessionToken,
+      );
+      const existingStatus = mapBdGateStatus(existingSession?.status);
+
+      if (existingStatus === 'PAID') {
+        await AuctionSheetService.updatePayment({
+          orderId: order._id?.toString(),
+          sessionToken: order.bdgateSessionToken,
+          status: 'PAID',
+          gatewayStatus: existingSession?.status,
+          transactionId:
+            existingSession?.tx_ref ||
+            existingSession?.transaction_id ||
+            order.bdgateSessionToken,
+          metadata: order.metadata,
+        });
+        throw new ApiError(
+          httpStatus.CONFLICT,
+          'Auction sheet order is already paid',
+        );
+      }
+
+      if (existingStatus === 'PENDING') {
+        return {
+          order_id: order._id?.toString(),
+          session_token: order.bdgateSessionToken,
+          payment_url: order.bdgatePaymentUrl,
+          reused: true,
+        };
+      }
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.statusCode === httpStatus.CONFLICT
+      ) {
+        throw error;
+      }
+      // If BDGate status is temporarily unavailable, reuse the existing
+      // checkout rather than creating two payable sessions for one order.
+      return {
+        order_id: order._id?.toString(),
+        session_token: order.bdgateSessionToken,
+        payment_url: order.bdgatePaymentUrl,
+        reused: true,
+      };
+    }
+  }
+
   const frontendUrl = getAppUrl(config.frontend_url) || 'http://localhost:3000';
   const backendUrl = getAppUrl(data?.backend_url || config.backend_url);
   if (!backendUrl) {
@@ -506,89 +615,134 @@ const updateOrderAfterPaidPayment = async (orderId?: string) => {
   await Order.findByIdAndUpdate(orderId, { isPending: false });
 };
 
-const handleBdGateWebhook = async (payload: any, signature?: string) => {
-  if (!verifyBdGateSignature(payload, signature)) {
+const handleBdGateWebhook = async (
+  payload: any,
+  signature?: string,
+  rawBody?: Buffer,
+) => {
+  if (!verifyBdGateSignature(payload, signature, rawBody)) {
     throw new ApiError(httpStatus.UNAUTHORIZED, 'Invalid BDGate signature');
   }
 
   const gatewayData =
     payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   const metadata = payload?.metadata || gatewayData?.metadata;
-  let paymentStatus = mapBdGateStatus(
+  const declaredPaymentStatus = mapBdGateStatus(
     payload?.status || gatewayData?.status,
     payload?.event || gatewayData?.event,
   );
   const orderId = metadata?.order_id || gatewayData?.order_id;
-  const sessionToken =
+  const suppliedSessionToken =
     payload?.session_token ||
     gatewayData?.session_token ||
     gatewayData?.session_id;
-  const transactionId =
-    payload?.tx_ref ||
-    gatewayData?.tx_ref ||
-    gatewayData?.transaction_id ||
-    sessionToken;
-
-  if (!sessionToken && !orderId) {
+  if (!suppliedSessionToken && !orderId) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       'BDGate payment reference missing',
     );
   }
 
-  if (paymentStatus === 'PAID' && !sessionToken) {
+  const orderBySession = suppliedSessionToken
+    ? await AuctionSheetOrder.findOne({
+        bdgateSessionToken: suppliedSessionToken,
+      })
+    : null;
+  const orderById =
+    orderId && mongoose.isValidObjectId(orderId)
+      ? await AuctionSheetOrder.findById(orderId)
+      : null;
+  if (
+    orderBySession &&
+    orderById &&
+    orderBySession._id.toString() !== orderById._id.toString()
+  ) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      'BDGate session token is required to confirm payment',
+      'BDGate webhook references two different auction-sheet orders',
     );
   }
-
-  if (sessionToken) {
-    const verifiedStatus = await getBdGateSessionStatus(sessionToken);
-    const verifiedPaymentStatus = mapBdGateStatus(verifiedStatus?.status);
-    if (paymentStatus === 'PAID' && verifiedPaymentStatus !== 'PAID') {
-      throw new ApiError(
-        httpStatus.BAD_GATEWAY,
-        'BDGate webhook arrived before the payment was confirmed',
-      );
-    }
-    paymentStatus = verifiedPaymentStatus;
-  }
-
-  const auctionSheetOrder =
-    (orderId && mongoose.isValidObjectId(orderId)
-      ? await AuctionSheetOrder.findById(orderId)
-      : null) ||
-    (sessionToken
-      ? await AuctionSheetOrder.findOne({ bdgateSessionToken: sessionToken })
-      : null);
+  const auctionSheetOrder = orderBySession || orderById;
 
   if (
     auctionSheetOrder ||
     metadata?.payment_type === 'auction_sheet_verification'
   ) {
-    const updatedOrder = await AuctionSheetService.updatePayment({
-      orderId,
-      sessionToken,
-      status: paymentStatus,
+    if (!auctionSheetOrder) {
+      throw new ApiError(
+        httpStatus.NOT_FOUND,
+        'Auction sheet order referenced by BDGate was not found',
+      );
+    }
+
+    const storedSessionToken = auctionSheetOrder.bdgateSessionToken;
+    if (!storedSessionToken) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        'Auction sheet order does not have a BDGate session',
+      );
+    }
+    if (suppliedSessionToken && suppliedSessionToken !== storedSessionToken) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        'BDGate session does not belong to this auction-sheet order',
+      );
+    }
+
+    const verifiedStatus = await getBdGateSessionStatus(storedSessionToken);
+    assertAuctionSheetSessionMatches(
+      auctionSheetOrder,
+      verifiedStatus,
+      storedSessionToken,
+    );
+    const verifiedPaymentStatus = mapBdGateStatus(verifiedStatus?.status);
+    if (declaredPaymentStatus === 'PAID' && verifiedPaymentStatus !== 'PAID') {
+      throw new ApiError(
+        httpStatus.BAD_GATEWAY,
+        'BDGate webhook arrived before the payment was confirmed',
+      );
+    }
+
+    const transactionId =
+      verifiedStatus?.tx_ref ||
+      verifiedStatus?.transaction_id ||
+      payload?.tx_ref ||
+      gatewayData?.tx_ref ||
+      storedSessionToken;
+    return AuctionSheetService.updatePayment({
+      orderId: auctionSheetOrder._id.toString(),
+      sessionToken: storedSessionToken,
+      status: verifiedPaymentStatus,
       gatewayStatus: payload?.status || gatewayData?.status,
       transactionId,
       metadata,
     });
-    return updatedOrder;
   }
+
+  let paymentStatus = declaredPaymentStatus;
+  if (suppliedSessionToken) {
+    const verifiedStatus = await getBdGateSessionStatus(suppliedSessionToken);
+    paymentStatus = mapBdGateStatus(verifiedStatus?.status);
+  }
+  const transactionId =
+    payload?.tx_ref ||
+    gatewayData?.tx_ref ||
+    gatewayData?.transaction_id ||
+    suppliedSessionToken;
 
   const payment = await Payment.findOneAndUpdate(
     {
       $or: [
-        ...(sessionToken ? [{ bdgateSessionToken: sessionToken }] : []),
+        ...(suppliedSessionToken
+          ? [{ bdgateSessionToken: suppliedSessionToken }]
+          : []),
         ...(orderId ? [{ order: orderId }] : []),
       ],
     },
     {
       paymentStatus,
       transactionId,
-      bdgateSessionToken: sessionToken,
+      bdgateSessionToken: suppliedSessionToken,
       bdgateStatus: payload?.status || gatewayData?.status,
       gateway: payload?.gateway || gatewayData?.gateway,
       amount: payload?.amount || gatewayData?.amount,
@@ -642,6 +796,11 @@ const syncBdGateAuctionSheetPaymentStatus = async (orderId: string) => {
 
   try {
     const bdGateData = await getBdGateSessionStatus(order.bdgateSessionToken);
+    assertAuctionSheetSessionMatches(
+      order,
+      bdGateData,
+      order.bdgateSessionToken,
+    );
     const paymentStatus = mapBdGateStatus(bdGateData?.status);
     const transactionId =
       bdGateData?.tx_ref ||

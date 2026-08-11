@@ -75,6 +75,7 @@ const bdGateWebhook = catchAsync(async (req: Request, res: Response) => {
   const result = await PaymentService.handleBdGateWebhook(
     req.body,
     req.headers['x-bdgate-signature'] as string | undefined,
+    req.rawBody,
   );
 
   sendResponse(res, {
