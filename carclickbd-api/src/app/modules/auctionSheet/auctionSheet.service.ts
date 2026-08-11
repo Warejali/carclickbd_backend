@@ -1,4 +1,5 @@
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 import httpStatus from 'http-status';
 import sharp from 'sharp';
@@ -182,33 +183,120 @@ const findReportImageUrls = (value: unknown) => {
   return [...new Set<string>(urls)].slice(0, 12);
 };
 
+const downloadRemoteAsset = (
+  assetUrl: string,
+  maxBytes: number,
+  redirectsRemaining = 3,
+): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    if (!isAllowedJpcenterAssetUrl(assetUrl)) {
+      reject(new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL'));
+      return;
+    }
+
+    const request = https.get(
+      assetUrl,
+      {
+        headers: {
+          Accept: 'application/pdf,image/*;q=0.9,*/*;q=0.1',
+          'Accept-Encoding': 'identity',
+          'User-Agent': 'CarClickBD-AuctionSheet/1.0',
+        },
+      },
+      response => {
+        const status = response.statusCode || 0;
+        const location = response.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          response.resume();
+          if (redirectsRemaining <= 0) {
+            reject(
+              new ApiError(
+                httpStatus.BAD_GATEWAY,
+                'Too many auction sheet download redirects',
+              ),
+            );
+            return;
+          }
+
+          const redirectedUrl = new URL(location, assetUrl).toString();
+          downloadRemoteAsset(
+            redirectedUrl,
+            maxBytes,
+            redirectsRemaining - 1,
+          ).then(resolve, reject);
+          return;
+        }
+
+        if (status < 200 || status >= 300) {
+          response.resume();
+          reject(
+            new ApiError(
+              httpStatus.BAD_GATEWAY,
+              `Auction sheet asset download failed (HTTP ${status})`,
+            ),
+          );
+          return;
+        }
+
+        const contentLength = Number(response.headers['content-length'] || 0);
+        if (contentLength > maxBytes) {
+          response.resume();
+          reject(
+            new ApiError(
+              httpStatus.BAD_GATEWAY,
+              'Auction sheet asset is too large',
+            ),
+          );
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+        response.on('data', (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes > maxBytes) {
+            response.destroy(
+              new ApiError(
+                httpStatus.BAD_GATEWAY,
+                'Auction sheet asset is too large',
+              ),
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => resolve(Buffer.concat(chunks)));
+        response.on('error', reject);
+      },
+    );
+
+    request.setTimeout(45000, () => {
+      request.destroy(new Error('Auction sheet asset request timed out'));
+    });
+    request.on('error', reject);
+  });
+
 const fetchRemoteAsset = async (assetUrl: string) => {
   if (!isAllowedJpcenterAssetUrl(assetUrl)) {
     throw new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL');
   }
 
-  const response = await fetch(assetUrl, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(45000),
-  });
-  if (!response.ok) {
-    throw new ApiError(
-      httpStatus.BAD_GATEWAY,
-      `Auction sheet asset download failed (HTTP ${response.status})`,
-    );
-  }
-
   const maxBytes = 15 * 1024 * 1024;
-  const contentLength = Number(response.headers.get('content-length') || 0);
-  if (contentLength > maxBytes) {
-    throw new ApiError(
-      httpStatus.BAD_GATEWAY,
-      'Auction sheet image is too large',
-    );
+  let lastError: unknown;
+  let buffer = Buffer.alloc(0);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      buffer = await downloadRemoteAsset(assetUrl, maxBytes);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, attempt * 750));
+      }
+    }
   }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
   if (!buffer.length || buffer.length > maxBytes) {
+    if (lastError instanceof ApiError) throw lastError;
     throw new ApiError(
       httpStatus.BAD_GATEWAY,
       'JPCenter returned an invalid auction sheet image',
@@ -331,27 +419,8 @@ const fetchRemotePdf = async (pdfUrl: string) => {
     throw new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL');
   }
 
-  const response = await fetch(pdfUrl, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(45000),
-  });
-  if (!response.ok) {
-    throw new ApiError(
-      httpStatus.BAD_GATEWAY,
-      `Auction sheet download failed (HTTP ${response.status})`,
-    );
-  }
-
-  const contentLength = Number(response.headers.get('content-length') || 0);
   const maxBytes = 30 * 1024 * 1024;
-  if (contentLength > maxBytes) {
-    throw new ApiError(
-      httpStatus.BAD_GATEWAY,
-      'Auction sheet file is too large',
-    );
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await downloadRemoteAsset(pdfUrl, maxBytes);
   if (
     buffer.length > maxBytes ||
     buffer.subarray(0, 5).toString() !== '%PDF-'
@@ -364,7 +433,7 @@ const fetchRemotePdf = async (pdfUrl: string) => {
 
   return {
     buffer,
-    contentType: response.headers.get('content-type') || 'application/pdf',
+    contentType: 'application/pdf',
   };
 };
 
