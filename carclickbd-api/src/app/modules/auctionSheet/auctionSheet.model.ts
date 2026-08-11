@@ -17,7 +17,12 @@ const auctionSheetOrderSchema = new Schema<IAuctionSheetOrder>(
     termsAccepted: { type: Boolean, required: true },
     status: {
       type: String,
-      enum: ['PENDING', 'PAID', 'FAILED', 'CANCELLED'] as AuctionSheetOrderStatus[],
+      enum: [
+        'PENDING',
+        'PAID',
+        'FAILED',
+        'CANCELLED',
+      ] as AuctionSheetOrderStatus[],
       default: 'PENDING',
       index: true,
     },
@@ -25,6 +30,9 @@ const auctionSheetOrderSchema = new Schema<IAuctionSheetOrder>(
     bdgatePaymentUrl: { type: String },
     bdgateStatus: { type: String },
     transactionId: { type: String },
+    jpcenterRecordKey: { type: String, select: false },
+    jpcenterPdfUrl: { type: String, select: false },
+    jpcenterReportFetchedAt: { type: Date },
     metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: true },

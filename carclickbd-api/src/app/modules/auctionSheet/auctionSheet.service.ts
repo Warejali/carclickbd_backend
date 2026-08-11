@@ -71,6 +71,136 @@ const firstValue = (...values: unknown[]) =>
     return String(value).trim() !== '';
   });
 
+const isAllowedJpcenterFileUrl = (rawUrl: string) => {
+  try {
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase();
+    const allowedHost =
+      hostname === 'jpcenter.ru' ||
+      hostname.endsWith('.jpcenter.ru') ||
+      hostname === 'ajes.com' ||
+      hostname.endsWith('.ajes.com');
+    return (
+      url.protocol === 'https:' && allowedHost && /\.pdf$/i.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const findPdfUrl = (value: unknown): string | undefined => {
+  const seen = new Set<unknown>();
+
+  const visit = (current: unknown): string | undefined => {
+    if (typeof current === 'string') {
+      const normalized = current.replace(/\\\//g, '/');
+      if (isAllowedJpcenterFileUrl(normalized)) return normalized;
+
+      const matches = normalized.match(
+        /https:\/\/[^\s"'<>]+\.pdf(?:\?[^\s"'<>]*)?/gi,
+      );
+      return matches?.find(isAllowedJpcenterFileUrl);
+    }
+
+    if (!current || typeof current !== 'object' || seen.has(current)) {
+      return undefined;
+    }
+    seen.add(current);
+
+    for (const nested of Object.values(current as Record<string, unknown>)) {
+      const result = visit(nested);
+      if (result) return result;
+    }
+    return undefined;
+  };
+
+  return visit(value);
+};
+
+const getJpcenterPdfUrl = async (chassis: string, recordKey: string) => {
+  const apiCode = String(config.jpcenter.api_code || '').trim();
+  if (!apiCode || !recordKey) {
+    throw new ApiError(
+      httpStatus.SERVICE_UNAVAILABLE,
+      'JPCenter report access is not configured',
+    );
+  }
+
+  const url = new URL(config.jpcenter.api_base_url);
+  url.searchParams.set('json', '');
+  url.searchParams.set('code', apiCode);
+  url.searchParams.set('chassis', chassis.replace(/[^A-Z0-9-]/gi, ''));
+  url.searchParams.set('key', recordKey);
+
+  const response = await fetch(url, { signal: AbortSignal.timeout(45000) });
+  const responseText = await response.text();
+  let responseBody: unknown = responseText;
+
+  try {
+    responseBody = JSON.parse(responseText);
+  } catch {
+    // Some JPCenter responses contain HTML with the PDF link.
+  }
+
+  if (!response.ok) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      `JPCenter report request failed (HTTP ${response.status})`,
+    );
+  }
+
+  const pdfUrl = findPdfUrl(responseBody);
+  if (!pdfUrl) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'JPCenter returned the report but no PDF download link was found',
+    );
+  }
+  return pdfUrl;
+};
+
+const fetchRemotePdf = async (pdfUrl: string) => {
+  if (!isAllowedJpcenterFileUrl(pdfUrl)) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Invalid auction sheet URL');
+  }
+
+  const response = await fetch(pdfUrl, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      `Auction sheet download failed (HTTP ${response.status})`,
+    );
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  const maxBytes = 30 * 1024 * 1024;
+  if (contentLength > maxBytes) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'Auction sheet file is too large',
+    );
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (
+    buffer.length > maxBytes ||
+    buffer.subarray(0, 5).toString() !== '%PDF-'
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      'JPCenter returned an invalid auction sheet PDF',
+    );
+  }
+
+  return {
+    buffer,
+    contentType: response.headers.get('content-type') || 'application/pdf',
+  };
+};
+
 const getJpcenterReport = async (chassis: string) => {
   const apiCode = String(config.jpcenter.api_code || '').trim();
   if (!apiCode) return null;
@@ -104,12 +234,14 @@ const getJpcenterReport = async (chassis: string) => {
       return null;
     }
 
-    const records = Array.isArray(responseBody?.aj)
+    const records: Record<string, any>[] = Array.isArray(responseBody?.aj)
       ? responseBody.aj.filter(
           (record: unknown) => record && typeof record === 'object',
         )
       : [];
-    const record = records[0] as Record<string, any> | undefined;
+    const record = records.find(item => String(item.key || '').trim()) as
+      | Record<string, any>
+      | undefined;
     if (!record) return null;
 
     const images = Array.isArray(record.images)
@@ -153,7 +285,12 @@ const getJpcenterReport = async (chassis: string) => {
       ),
       image: firstValue(record.image, images[0]),
       images,
-      history: records,
+      record_key: String(record.key || '').trim(),
+      history: records.map(item =>
+        Object.fromEntries(
+          Object.entries(item).filter(([field]) => field !== 'key'),
+        ),
+      ),
     };
   } catch (error: any) {
     console.error('[jpcenter] lookup failed', {
@@ -182,12 +319,20 @@ const getReport = async (rawChassis: unknown) => {
           .lean()
       : null;
   const sheetFile = findAuctionSheetFile(chassis);
+  const jpcenterRecordKey = String(jpcenterReport?.record_key || '').trim();
+  const publicJpcenterReport = jpcenterReport
+    ? Object.fromEntries(
+        Object.entries(jpcenterReport).filter(
+          ([field]) => field !== 'record_key',
+        ),
+      )
+    : null;
 
   return {
     chassis,
-    found: Boolean(jpcenterReport || product),
+    found: Boolean(publicJpcenterReport || product),
     report:
-      jpcenterReport ||
+      publicJpcenterReport ||
       (product
         ? {
             maker: product.maker,
@@ -201,7 +346,7 @@ const getReport = async (rawChassis: unknown) => {
             condition: product.condition,
           }
         : null),
-    download_available: Boolean(sheetFile),
+    download_available: Boolean(sheetFile || jpcenterRecordKey),
   };
 };
 
@@ -227,10 +372,16 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Terms must be accepted');
   }
 
-  if (!findAuctionSheetFile(chassis)) {
+  const localSheetFile = findAuctionSheetFile(chassis);
+  const jpcenterReport = localSheetFile
+    ? null
+    : await getJpcenterReport(chassis);
+  const jpcenterRecordKey = String(jpcenterReport?.record_key || '').trim();
+
+  if (!localSheetFile && !jpcenterRecordKey) {
     throw new ApiError(
       httpStatus.NOT_FOUND,
-      'Auction sheet file is not available for this chassis. Payment was not created',
+      'Auction sheet is not available from JPCenter for this chassis. Payment was not created',
     );
   }
 
@@ -242,7 +393,7 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
     );
   }
 
-  return AuctionSheetOrder.create({
+  const createdOrder = await AuctionSheetOrder.create({
     chassis,
     normalizedChassis: normalizedFileName(chassis),
     name,
@@ -253,11 +404,16 @@ const createOrder = async (payload: Partial<IAuctionSheetOrder>) => {
     currency: 'BDT',
     termsAccepted: true,
     status: 'PENDING',
+    jpcenterRecordKey: jpcenterRecordKey || undefined,
   });
+
+  return AuctionSheetOrder.findById(createdOrder._id);
 };
 
 const getOrderById = async (id: string) => {
-  const order = await AuctionSheetOrder.findById(id);
+  const order = await AuctionSheetOrder.findById(id).select(
+    '+jpcenterRecordKey +jpcenterPdfUrl',
+  );
   if (!order)
     throw new ApiError(httpStatus.NOT_FOUND, 'Auction sheet order not found');
   return order;
@@ -293,15 +449,26 @@ const getPaymentStatus = async (id: string, backendUrl: string) => {
   const order = await getOrderById(id);
   const sheetFile = findAuctionSheetFile(order.chassis);
   const paid = order.status === 'PAID';
+  if (paid && !sheetFile && !order.jpcenterRecordKey && !order.jpcenterPdfUrl) {
+    const jpcenterReport = await getJpcenterReport(order.chassis);
+    const recoveredKey = String(jpcenterReport?.record_key || '').trim();
+    if (recoveredKey) {
+      order.jpcenterRecordKey = recoveredKey;
+      await order.save();
+    }
+  }
+  const remoteAvailable = Boolean(
+    order.jpcenterRecordKey || order.jpcenterPdfUrl,
+  );
 
   return {
     payment_id: order._id,
     status: order.status,
     paid,
     chassis: order.chassis,
-    download_available: paid && Boolean(sheetFile),
+    download_available: paid && Boolean(sheetFile || remoteAvailable),
     download_url:
-      paid && sheetFile
+      paid && (sheetFile || remoteAvailable)
         ? `${backendUrl}/api/v1/auction-sheet/download/${order._id}`
         : undefined,
   };
@@ -317,14 +484,34 @@ const getDownloadFile = async (id: string) => {
   }
 
   const filePath = findAuctionSheetFile(order.chassis);
-  if (!filePath) {
+  if (filePath) return { filePath, chassis: order.chassis };
+
+  if (!order.jpcenterRecordKey && !order.jpcenterPdfUrl) {
+    const jpcenterReport = await getJpcenterReport(order.chassis);
+    const recoveredKey = String(jpcenterReport?.record_key || '').trim();
+    if (recoveredKey) {
+      order.jpcenterRecordKey = recoveredKey;
+      await order.save();
+    }
+  }
+
+  let pdfUrl = String(order.jpcenterPdfUrl || '').trim();
+  if (!pdfUrl && order.jpcenterRecordKey) {
+    pdfUrl = await getJpcenterPdfUrl(order.chassis, order.jpcenterRecordKey);
+    order.jpcenterPdfUrl = pdfUrl;
+    order.jpcenterReportFetchedAt = new Date();
+    await order.save();
+  }
+
+  if (!pdfUrl) {
     throw new ApiError(
       httpStatus.NOT_FOUND,
-      'Auction sheet file is not available yet',
+      'Auction sheet is not available from JPCenter',
     );
   }
 
-  return { filePath, chassis: order.chassis };
+  const remoteFile = await fetchRemotePdf(pdfUrl);
+  return { ...remoteFile, chassis: order.chassis };
 };
 
 export const AuctionSheetService = {

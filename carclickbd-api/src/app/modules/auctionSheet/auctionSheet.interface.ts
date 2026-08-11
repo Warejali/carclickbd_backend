@@ -22,6 +22,9 @@ export type IAuctionSheetOrder = {
   bdgatePaymentUrl?: string;
   bdgateStatus?: string;
   transactionId?: string;
+  jpcenterRecordKey?: string;
+  jpcenterPdfUrl?: string;
+  jpcenterReportFetchedAt?: Date;
   metadata?: Record<string, unknown>;
   createdAt?: Date;
   updatedAt?: Date;

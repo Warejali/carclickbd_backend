@@ -26,7 +26,9 @@ const createOrder = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getPaymentStatus = catchAsync(async (req: Request, res: Response) => {
-  const forwardedProtocol = req.headers['x-forwarded-proto'] as string | undefined;
+  const forwardedProtocol = req.headers['x-forwarded-proto'] as
+    | string
+    | undefined;
   const protocol = forwardedProtocol?.split(',')[0] || req.protocol;
   const backendUrl = `${protocol}://${req.get('host')}`;
   const result = await AuctionSheetService.getPaymentStatus(
@@ -42,18 +44,32 @@ const getPaymentStatus = catchAsync(async (req: Request, res: Response) => {
 });
 
 const download = catchAsync(async (req: Request, res: Response) => {
-  const { filePath, chassis } = await AuctionSheetService.getDownloadFile(
-    req.params.id,
+  const file = await AuctionSheetService.getDownloadFile(req.params.id);
+
+  if ('buffer' in file) {
+    res.setHeader('Content-Type', file.contentType || 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="auction-sheet-${file.chassis}.pdf"`,
+    );
+    res.setHeader('Content-Length', file.buffer.length);
+    res.send(file.buffer);
+    return;
+  }
+
+  const extension = path.extname(file.filePath) || '.pdf';
+  res.download(
+    file.filePath,
+    `auction-sheet-${file.chassis}${extension}`,
+    error => {
+      if (error && !res.headersSent) {
+        res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+          success: false,
+          message: 'Could not download auction sheet',
+        });
+      }
+    },
   );
-  const extension = path.extname(filePath) || '.pdf';
-  res.download(filePath, `auction-sheet-${chassis}${extension}`, error => {
-    if (error && !res.headersSent) {
-      res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
-        success: false,
-        message: 'Could not download auction sheet',
-      });
-    }
-  });
 });
 
 export const AuctionSheetController = {
