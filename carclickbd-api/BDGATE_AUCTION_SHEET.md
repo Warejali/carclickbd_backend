@@ -24,7 +24,7 @@ FRONTEND_URL=https://www.carclickbd.com
 BACKEND_URL=https://carclickbd-backend.jdmcarworld.com
 BDGATE_API_KEY=bd_live_your_key
 BDGATE_API_BASE_URL=https://api.bdgate.net/api
-BDGATE_WEBHOOK_SECRET=your_webhook_secret_optional
+BDGATE_WEBHOOK_SECRET=your_dedicated_webhook_secret_if_configured
 AUCTION_SHEET_PRICE_BDT=800
 JPCENTER_API_CODE=your_private_access_code
 JPCENTER_API_BASE_URL=https://jpcenter.ru/api/report
@@ -32,7 +32,9 @@ AUCTION_SHEET_ROOT=/home/u819018346/carclickbd-auction-sheets
 ```
 
 The BDGate and JPCenter credentials must be entered in Hostinger only; never
-commit them. A payment is never unlocked from the redirect alone.
+commit them. Webhook signatures are mandatory; the dedicated webhook secret is
+used when configured, otherwise BDGate's documented API-key HMAC mode is used.
+A payment is never unlocked from the redirect alone.
 
 The chassis lookup uses JPCenter's listing request first. Its private record key
 is stored on the order and is not returned to the browser. Before BDGate

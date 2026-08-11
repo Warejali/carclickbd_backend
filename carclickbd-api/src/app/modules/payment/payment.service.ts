@@ -226,8 +226,10 @@ const verifyBdGateSignature = (
   signature?: string,
   rawBody?: Buffer,
 ) => {
-  const secret = config.bdgate.webhook_secret;
-  if (!secret) return !signature;
+  // BDGate's integration guide signs with the API key, while installations
+  // that configure a dedicated webhook secret use that value instead.
+  const secret = config.bdgate.webhook_secret || config.bdgate.api_key;
+  if (!secret) return false;
   if (!signature) return false;
 
   const digest = crypto
