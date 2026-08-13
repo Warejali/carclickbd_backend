@@ -13,6 +13,14 @@ type FacebookApiResponse = {
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 
+const toPublicOrigin = (value: string | undefined, fallback: string) => {
+  try {
+    return new URL(value || fallback).origin;
+  } catch {
+    return trimTrailingSlash(fallback);
+  }
+};
+
 const normalizeGraphApiVersion = (value: string) =>
   value.startsWith('v') ? value : `v${value}`;
 
@@ -52,7 +60,7 @@ const formatProductCaption = (product: IProduct, productUrl: string) => {
       .join(' ');
   const grade = product.grade || product.auctionGrade;
   const lines = [
-    `🚘 ${title}`,
+    `Car for sale: ${title}`,
     `Year: ${product.year || product.productionYear || 'N/A'} | Color: ${product.color || 'N/A'}`,
     grade ? `Grade: ${grade}` : '',
     product.mileage ? `Mileage: ${product.mileage} km` : '',
@@ -101,10 +109,11 @@ const publishProductToFacebook = async (product: IProduct) => {
     return null;
   }
 
-  const frontendUrl = trimTrailingSlash(
-    config.frontend_url || 'https://www.carclickbd.com',
+  const frontendUrl = toPublicOrigin(
+    config.frontend_url,
+    'https://www.carclickbd.com',
   );
-  const productUrl = `${frontendUrl}/auction-details/${product._id.toString()}`;
+  const productUrl = `${frontendUrl}/car-details/${product._id.toString()}`;
   const caption = formatProductCaption(product, productUrl);
   const graphVersion = normalizeGraphApiVersion(
     config.facebook.graph_api_version,
@@ -112,7 +121,10 @@ const publishProductToFacebook = async (product: IProduct) => {
   const graphBaseUrl = `https://graph.facebook.com/${graphVersion}/${pageId}`;
   const imageUrl = toAbsoluteUrl(
     product.photos?.mainPhoto,
-    config.backend_url || 'https://carclickbd-backend.jdmcarworld.com',
+    toPublicOrigin(
+      config.backend_url,
+      'https://carclickbd-backend.jdmcarworld.com',
+    ),
   );
 
   try {

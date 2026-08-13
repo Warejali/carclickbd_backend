@@ -290,9 +290,10 @@ const createProduct = async (
       message: `New listing added: ${result[0].title}. Review seller listing and status.`,
     });
 
-    // Publishing is intentionally non-blocking: a Facebook API outage must not
-    // make a successfully-created listing fail for the seller.
-    void facebookService.publishProductToFacebook(result[0]);
+    // Wait for the publishing attempt so Hostinger cannot finish the request
+    // before the Facebook call has been sent. The Facebook service handles API
+    // failures internally, so a created listing still remains successful.
+    await facebookService.publishProductToFacebook(result[0]);
 
     return result[0];
   } catch (error) {
