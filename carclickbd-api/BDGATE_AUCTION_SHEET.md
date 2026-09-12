@@ -1,3 +1,5 @@
+> Archived: BDGate has been replaced by EPS. See EPS_INTEGRATION.md for current setup.
+
 # BDGate auction-sheet payment
 
 The public flow is:

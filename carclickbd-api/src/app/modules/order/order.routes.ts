@@ -30,8 +30,16 @@ router.get(
 
 router.get('/:id', OrderController.getSingleOrder);
 
-router.patch('/:id', OrderController.updateOrder);
+router.patch(
+  '/:id',
+  auth(ENUM_USER_ROLE.ADMIN, ENUM_USER_ROLE.SUPER_ADMIN),
+  OrderController.updateOrder,
+);
 
-router.delete('/:id', OrderController.deleteOrder);
+router.delete(
+  '/:id',
+  auth(ENUM_USER_ROLE.ADMIN, ENUM_USER_ROLE.SUPER_ADMIN),
+  OrderController.deleteOrder,
+);
 
 export const OrderRoutes = router;

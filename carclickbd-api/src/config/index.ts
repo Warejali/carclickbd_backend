@@ -24,11 +24,13 @@ export default {
   auction_sheet_root:
     process.env.AUCTION_SHEET_ROOT ||
     `${process.env.UPLOAD_ROOT || process.env.UPLOAD_DIR || ''}/auction-sheets`,
-  bdgate: {
-    api_key: process.env.BDGATE_API_KEY,
-    api_base_url:
-      process.env.BDGATE_API_BASE_URL || 'https://api.bdgate.net/api',
-    webhook_secret: process.env.BDGATE_WEBHOOK_SECRET,
+  eps: {
+    username: process.env.EPS_USERNAME,
+    password: process.env.EPS_PASSWORD,
+    hash_key: process.env.EPS_HASH_KEY,
+    merchant_id: process.env.EPS_MERCHANT_ID,
+    store_id: process.env.EPS_STORE_ID,
+    api_base_url: process.env.EPS_API_BASE_URL || 'https://pgapi.eps.com.bd',
   },
   jpcenter: {
     api_code:

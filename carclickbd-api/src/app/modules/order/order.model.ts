@@ -26,6 +26,10 @@ const orderSchema = new Schema<IOrder>(
       type: Number,
       required: true,
     },
+    serverPriced: { type: Boolean, default: false },
+    items: [
+      { product: { type: String }, quantity: Number, unitAmount: Number },
+    ],
 
     buyerInfo: {
       name: {
@@ -37,7 +41,7 @@ const orderSchema = new Schema<IOrder>(
         required: true,
       },
       phone: {
-        type: Number,
+        type: String,
         required: true,
       },
 

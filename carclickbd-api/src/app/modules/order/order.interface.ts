@@ -7,11 +7,13 @@ export type IOrder = {
   orderNumber: string;
   totalQuantity: number;
   totalAmount: number;
+  serverPriced?: boolean;
+  items?: { product: string; quantity: number; unitAmount: number }[];
   isPending?: boolean;
   buyerInfo?: {
     name?: string;
     email?: string;
-    phone?: number;
+    phone?: string;
     address?: {
       street?: string;
       state?: string;
