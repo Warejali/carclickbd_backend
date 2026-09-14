@@ -14,7 +14,8 @@
     "prettier:fix": "npx prettier --write .",
     "lint-prettier": "npm run lint:check && npm run prettier:check",
     "lint-staged": "lint-staged",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:eps": "npm run build && node --test tests/eps.gateway.test.cjs tests/eps.service.test.cjs tests/order.pricing.test.cjs"
   },
   "lint-staged": {
     "src/**/*.ts": "npm run lint-prettier"

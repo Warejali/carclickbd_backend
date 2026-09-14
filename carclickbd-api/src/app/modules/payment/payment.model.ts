@@ -62,4 +62,12 @@ const paymentSchema = new Schema<IPayment>(
   },
 );
 
+paymentSchema.index(
+  { order: 1, paymentMethod: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { paymentMethod: 'eps' },
+  },
+);
+
 export const Payment = model<IPayment>('Payment', paymentSchema);

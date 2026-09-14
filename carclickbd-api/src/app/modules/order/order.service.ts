@@ -9,6 +9,7 @@ import { paginationHelpers } from '../../../helper/paginationHelper';
 import { IGenericResponse } from '../../../shared/sendResponse';
 import { IPaginationOptions } from '../../../inerfaces/pagination';
 import { generateOrderNumber } from '../user/user.utils';
+import { priceOrder } from './order.pricing';
 
 // const createOrder = async (data: any, user:IUser ): Promise<IOrder> => {
 //     const orderNumber = await generateOrderNumber();
@@ -26,10 +27,16 @@ import { generateOrderNumber } from '../user/user.utils';
 // };
 
 const createOrder = async (payload: any): Promise<IOrder> => {
+  const pricing = await priceOrder(payload);
   const orderNumber = await generateOrderNumber();
   payload.orderNumber = orderNumber;
   const result = await Order.create({
-    ...payload,
+    user: payload.user,
+    buyerInfo: payload.buyerInfo,
+    orderNumber,
+    ...pricing,
+    serverPriced: true,
+    isPending: true,
   });
   return result;
 };
